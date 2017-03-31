@@ -1,5 +1,6 @@
 dcgan/data
 data
+runs/*
 *.pyc
 OpenNMT/data
 *.pt
