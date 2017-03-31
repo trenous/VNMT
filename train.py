@@ -1,11 +1,15 @@
 import onmt
 import argparse
+import numpy
 import torch
 import torch.nn as nn
 from torch import cuda
 from torch.autograd import Variable
 import math
 import time
+from tensorboard_logger import configure, log_value
+
+
 
 parser = argparse.ArgumentParser(description='train.py')
 
@@ -25,9 +29,9 @@ parser.add_argument('-train_from',
 
 parser.add_argument('-layers', type=int, default=2,
                     help='Number of layers in the LSTM encoder/decoder')
-parser.add_argument('-rnn_size', type=int, default=500,
+parser.add_argument('-rnn_size', type=int, default=100,
                     help='Size of LSTM hidden states')
-parser.add_argument('-word_vec_size', type=int, default=500,
+parser.add_argument('-word_vec_size', type=int, default=102,
                     help='Word embedding sizes')
 parser.add_argument('-input_feed', type=int, default=1,
                     help="""Feed the context vector at each time step as
@@ -43,25 +47,22 @@ parser.add_argument('-brnn_merge', default='concat',
 
 ## Optimization options
 
-parser.add_argument('-batch_size', type=int, default=64,
+parser.add_argument('-batch_size', type=int, default=4,
                     help='Maximum batch size')
-parser.add_argument('-max_generator_batches', type=int, default=32,
-                    help="""Maximum batches of words in a sequence to run
-                    the generator on in parallel. Higher is faster, but uses
-                    more memory.""")
-parser.add_argument('-epochs', type=int, default=13,
+parser.add_argument('-epochs', type=int, default=1,
                     help='Number of training epochs')
 parser.add_argument('-start_epoch', type=int, default=1,
                     help='The epoch from which to start')
 parser.add_argument('-param_init', type=float, default=0.1,
-                    help="""Parameters are initialized over uniform distribution
+                help="""Parameters are initialized over uniform distribution
                     with support (-param_init, param_init)""")
 parser.add_argument('-optim', default='sgd',
                     help="Optimization method. [sgd|adagrad|adadelta|adam]")
 parser.add_argument('-learning_rate', type=float, default=1.0,
-                    help="""Starting learning rate. If adagrad/adadelta/adam is
-                    used, then this is the global learning rate. Recommended
-                    settings: sgd = 1, adagrad = 0.1, adadelta = 1, adam = 0.1""")
+                    help="""Starting learning rate. If adagrad/adadelta/adam
+                    is used, then this is the global learning rate.
+                    Recommended settings:
+                    sgd = 1, adagrad = 0.1, adadelta = 1, adam = 0.1""")
 parser.add_argument('-max_grad_norm', type=float, default=5,
                     help="""If the norm of the gradient vector exceeds this,
                     renormalize it to have the norm equal to max_grad_norm""")
@@ -75,8 +76,8 @@ parser.add_argument('-start_decay_at', default=8,
                     help="Start decay after this epoch")
 parser.add_argument('-curriculum', action="store_true",
                     help="""For this many epochs, order the minibatches based
-                    on source sequence length. Sometimes setting this to 1 will
-                    increase convergence speed.""")
+                    on source sequence length. Sometimes setting this to 1
+                    will increase convergence speed.""")
 parser.add_argument('-pre_word_vecs_enc',
                     help="""If a valid path is specified, then this will load
                     pretrained word embeddings on the encoder side.
@@ -85,6 +86,29 @@ parser.add_argument('-pre_word_vecs_dec',
                     help="""If a valid path is specified, then this will load
                     pretrained word embeddings on the decoder side.
                     See README for specific formatting instructions.""")
+parser.add_argument('-sample', type=int, default=1,
+                    help="""Number of Samples to draw for Monte Carlo
+                    approximation of loss.""")
+parser.add_argument('-sample_reinforce', type=int, default=1,
+                    help="""Number of Samples to draw for Monte Carlo
+                    approximation of Reward for Reinforce Algorithm.""")
+parser.add_argument('-max_len_latent', type=int, default=64,
+                    help="""Maximum Length of the Latent Sequence.""")
+parser.add_argument('-latent_vec_size', type=int, default=104,
+                    help="""Dimension of Gaussian Variates of the latent
+                    sequence.""")
+parser.add_argument('-gamma', type=float, default=0.99,
+                    help="""Decay Parameter For Geometric Prior Distribution
+                    Over the Length of the Latent Sequence.""")
+parser.add_argument('-lam', type=float, default=1.0,
+                    help="""Balancing factor lambda for the contribution of
+                    reinforcement to the total loss.""")
+parser.add_argument('-ptz', type=bool, default=True,
+                    help="""If True, use p_theta(z) in the loss.""")
+parser.add_argument('-logdir', default='run',
+                    help="Tensorboard Logdir")
+
+
 
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
@@ -92,6 +116,7 @@ parser.add_argument('-gpus', default=[], nargs='+', type=int,
 
 parser.add_argument('-log_interval', type=int, default=50,
                     help="Print stats at this interval.")
+
 # parser.add_argument('-seed', type=int, default=3435,
 #                     help="Seed for random initialization")
 
@@ -99,7 +124,7 @@ opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
 
 print(opt)
-
+configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with -cuda")
 
@@ -114,25 +139,16 @@ def NMTCriterion(vocabSize):
         crit.cuda()
     return crit
 
+def prior(z, k):
+    ''' Computes p_theta(z).
+        Input: z ~ batch x len x
+    '''
+    mask = Variable(torch.range(0, k.max()-1), requires_grad=False)
+    mask = mask.unsqueeze(1).expand(mask.size(0), z.size(1))
+    mask = mask.ge(k.t().expand_as(mask))
+    mask = mask.unsqueeze(2)
+    return 0
 
-def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
-    # compute generations one piece at a time
-    loss = 0
-    outputs = Variable(outputs.data, requires_grad=(not eval), volatile=eval).contiguous()
-
-    batch_size = outputs.size(1)
-    outputs_split = torch.split(outputs, opt.max_generator_batches)
-    targets_split = torch.split(targets.contiguous(), opt.max_generator_batches)
-    for out_t, targ_t in zip(outputs_split, targets_split):
-        out_t = out_t.view(-1, out_t.size(2))
-        pred_t = generator(out_t)
-        loss_t = crit(pred_t, targ_t.view(-1))
-        loss += loss_t.data[0]
-        if not eval:
-            loss_t.div(batch_size).backward()
-
-    grad_output = None if outputs.grad is None else outputs.grad.data
-    return loss, grad_output
 
 
 def eval(model, criterion, data):
@@ -161,35 +177,45 @@ def trainModel(model, trainData, validData, dataset, optim):
             p.data.uniform_(-opt.param_init, opt.param_init)
 
     # define criterion of each GPU
-    criterion = NMTCriterion(dataset['dicts']['tgt'].size())
-
+    criterion = onmt.Models.Loss(opt, model.generator,
+                            dataset['dicts']['tgt'].size())
+    baseline = onmt.Models.BaseLine(opt)
     start_time = time.time()
     def trainEpoch(epoch):
-
-        # shuffle mini batch order
+        #shuffle mini batch order
         batchOrder = torch.randperm(len(trainData))
-
         total_loss, report_loss = 0, 0
         total_words, report_words = 0, 0
         report_src_words = 0
         start = time.time()
+	loss_ = numpy.Inf
+	reward_ = numpy.Inf
+        trainData
         for i in range(len(trainData)):
-
+            step = i + (epoch-1) * len(trainData)
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-
+            outputs, mu, sigma, pi, k, z, context = model(batch)
+            base_line = baseline(context)
             model.zero_grad()
-            outputs = model(batch)
+            baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, gradOutput = memoryEfficientLoss(
-                    outputs, targets, model.generator, criterion)
+            loss, r_mean, loss_bl = criterion.forward(outputs, mu, sigma, pi, k, z, targets, base_line, step)
+            '''            if loss_ == numpy.Inf:
+                loss_ = loss.data.numpy()
+            else:
+                loss_ = 0.9 * loss_ + 0.1 * loss.data.numpy()
 
-            outputs.backward(gradOutput)
-
+            if reward_ == numpy.Inf:
+                reward_ = r_mean.data.numpy()
+            else:
+                reward_ = 0.9 * reward_ + 0.1 * reward.data.numpy()
+            '''
+            loss.backward()
+            loss_bl.backward()
             # update the parameters
             grad_norm = optim.step()
-
             report_loss += loss
             total_loss += loss
             report_src_words += batch[0].data.ne(onmt.Constants.PAD).sum()
@@ -199,13 +225,14 @@ def trainModel(model, trainData, validData, dataset, optim):
             if i % opt.log_interval == 0 and i > 0:
                 print("Epoch %2d, %5d/%5d batches; perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
                       (epoch, i, len(trainData),
-                      math.exp(report_loss / report_words),
+                      numpy.exp(report_loss.data.numpy()[0] / report_words),
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
 
                 report_loss = report_words = report_src_words = 0
                 start = time.time()
-
+            ### Logging
+            log_value('baseline', base_line.mean().data[0], step)
         return total_loss / total_words
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
@@ -215,10 +242,12 @@ def trainModel(model, trainData, validData, dataset, optim):
         train_loss = trainEpoch(epoch)
         print('Train perplexity: %g' % math.exp(min(train_loss, 100)))
 
-        #  (2) evaluate on the validation set
-        valid_loss = eval(model, criterion, validData)
-        valid_ppl = math.exp(min(valid_loss, 100))
-        print('Validation perplexity: %g' % valid_ppl)
+        ##  (2) evaluate on the validation set
+        #valid_loss = eval(model, criterion, validData)
+        #valid_ppl = math.exp(min(valid_loss, 100))
+        #print('Validation perplexity: %g' % valid_ppl)
+        valid_loss = 100.
+        valid_ppl = 1000.
 
         #  (3) maybe update the learning rate
         if opt.optim == 'sgd':
@@ -232,8 +261,8 @@ def trainModel(model, trainData, validData, dataset, optim):
             'epoch': epoch,
             'optim': optim,
         }
-        torch.save(checkpoint,
-                   '%s_e%d_%.2f.pt' % (opt.save_model, epoch, valid_ppl))
+        #torch.save(checkpoint,
+        #           '%s_e%d_%.2f.pt' % (opt.save_model, epoch, valid_ppl))
 
 
 def main():
@@ -259,12 +288,21 @@ def main():
     if opt.train_from is None:
         encoder = onmt.Models.Encoder(opt, dicts['src'])
         decoder = onmt.Models.Decoder(opt, dicts['tgt'])
+        decoderlatent = onmt.Models.DecoderLatent(opt)
+        encoderlatent = onmt.Models.EncoderLatent(opt)
+        lengthnet = onmt.Models.LengthNet(opt)
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
             nn.LogSoftmax())
         if opt.cuda > 1:
             generator = nn.DataParallel(generator, device_ids=opt.gpus)
-        model = onmt.Models.NMTModel(encoder, decoder, generator)
+        model = onmt.Models.NMTModel(encoder,
+                                     lengthnet,
+                                     decoderlatent,
+                                     encoderlatent,
+                                     decoder,
+                                     generator,
+                                     opt)
         if opt.cuda > 1:
             model = nn.DataParallel(model, device_ids=opt.gpus)
         if opt.cuda:
@@ -272,7 +310,7 @@ def main():
         else:
             model.cpu()
 
-        model.generator = generator
+        #model.generator = generator
 
         for p in model.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)

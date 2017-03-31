@@ -22,6 +22,7 @@ Constructs a unit mapping.
 
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
 import math
 
 class GlobalAttention(nn.Module):
@@ -56,3 +57,61 @@ class GlobalAttention(nn.Module):
         contextOutput = self.tanh(self.linear_out(contextCombined))
 
         return contextOutput, attn
+
+class GlobalAttentionLatent(nn.Module):
+    def __init__(self, opt):
+        dim = opt.rnn_size
+        super(GlobalAttentionLatent, self).__init__()
+        self.linear_in = nn.Linear(dim, dim, bias=False)
+        self.sm = nn.Softmax()
+        self.tanh = nn.Tanh()
+        self.mask = None
+
+    def applyMask(self, mask):
+        self.mask = mask
+
+    def forward(self, input, context):
+        """
+        input: batch x dim
+        context: batch x sourceL x dim
+        """
+        targetT = self.linear_in(input).unsqueeze(2)  # batch x dim x 1
+
+        # Get attention
+        attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
+        if self.mask is not None:
+            attn.data.masked_fill_(self.mask, float('-inf'))
+        attn = self.sm(attn)
+        attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
+
+        weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
+
+        return weightedContext
+
+class ConvexCombination(nn.Module):
+    ''' Computes Convex Combination of Context Vectors.
+        In: Context Matrix C batch x sourceLength x dim
+        Out: Convex Combination of the columns of C batch x dim
+    '''
+    def __init__(self, opt):
+        dim = opt.rnn_size
+        super(ConvexCombination, self).__init__()
+        self.sm = nn.Softmax()
+        self.linear_in = nn.Linear(dim, 1)
+
+    def forward(self, context):
+        """
+        context: batch x sourceL x dim
+        """
+        # Compute Scores
+        batch = context.size(0)
+        length = context.size(1)
+        dim = context.size(2)
+        contextv = context.contiguous().view(batch*length, dim)
+        scores = self.linear_in(contextv).view(batch, length, 1).squeeze(2)
+        # scores.size =  batch x sourceL
+        # Compute Convex Combination
+        attn = self.sm(scores)
+        attn = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
+        weightedContext = torch.bmm(attn, context)  # batch x dim
+        return weightedContext.squeeze(1)

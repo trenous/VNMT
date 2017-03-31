@@ -1,1 +1,1 @@
-from onmt.modules.GlobalAttention import GlobalAttention
+from onmt.modules.GlobalAttention import GlobalAttention, GlobalAttentionLatent, ConvexCombination
