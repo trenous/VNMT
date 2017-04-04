@@ -204,12 +204,14 @@ class GeneratorLatent(nn.Module):
         self.size = opt.latent_vec_size
         self.sigma = nn.Linear(opt.rnn_size, self.size)
         self.mu = nn.Linear(opt.rnn_size, self.size)
+        self.cuda = opt.cuda
 
     def forward(self, out):
         batch = out.size(0)
         eps =  Variable(torch.randn(batch, self.size),
                         requires_grad=False)
-        density = torch.exp(-0.5*eps*eps) / (math.sqrt(2*math.pi))
+        if self.cuda:
+            eps = eps.cuda()
         mu = self.mu(out)
         sigma = self.sigma(out)
         z_i = mu + torch.exp(sigma)*eps
@@ -230,6 +232,7 @@ class DecoderLatent(nn.Module):
         self.dropout = nn.Dropout(opt.dropout)
         self.hidden_size = opt.rnn_size
         self.out_size = opt.latent_vec_size
+        self.cuda = opt.cuda
 
 
 
@@ -258,6 +261,8 @@ class DecoderLatent(nn.Module):
             output, (h_1, c_1) = self.rnn(z_i, hidden)
             mask = i * Variable(torch.ones(batch_size, 1),
                             requires_grad=False)
+            if self.cuda:
+                mask = mask.cuda()
             mask = mask.ge(k).unsqueeze(0).expand_as(h_1).float()
             h_1 = mask * hidden[0] + (1-mask) * h_1
             c_1 = mask * hidden[1] + (1-mask) * c_1
@@ -273,6 +278,8 @@ class DecoderLatent(nn.Module):
         sigma = torch.stack(sigma)
         # mask samples to length k
         mask = Variable(torch.range(0, float(k_max-1)), requires_grad=False)
+        if self.cuda:
+            mask = mask.cuda
         mask = mask.unsqueeze(1).expand(mask.size(0), batch_size)
         mask = mask.ge(k.t().expand_as(mask))
         mask = mask.unsqueeze(2)
@@ -392,7 +399,6 @@ class Loss(nn.Module):
     def __init__(self, opt, generator, vocabSize):
         super(Loss, self).__init__()
         self.generator = generator
-        self.ptz = opt.ptz
         self.lam = opt.lam
         self.sample = opt.sample
         self.reinforce = opt.sample_reinforce
@@ -400,8 +406,7 @@ class Loss(nn.Module):
         weight = torch.ones(vocabSize)
         weight[onmt.Constants.PAD] = 0
         crit = nn.NLLLoss(weight, size_average=False)
-        if opt.cuda:
-            crit.cuda()
+        self.cuda = opt.cuda
         self.crit = crit
         ### Latent Length Dist
         self.gamma = opt.gamma
@@ -412,6 +417,10 @@ class Loss(nn.Module):
         self.prior_len /= self.prior_len.sum()
         self.prior_len = Variable(self.prior_len, requires_grad=False)
         self.prior_len = self.prior_len.unsqueeze(0)
+        if self.cuda:
+            self.prior_len = self.prior_len.cuda()
+            self.crit = self.crit.cuda()
+        self.r_mean = 0
 
     def kld_length(self, pi):
         ''' Returns the KL Divergence of the approximate posterior
@@ -421,25 +430,25 @@ class Loss(nn.Module):
 
     def p_theta_z(self, z, k):
         '''Returns Log Density of z given length k under the Prior.'''
-        if not self.ptz:
-            return torch.zeros(z.size(0))
-        pz = -0.5*z*z + math.log(1.0/math.sqrt(2*math.pi))
-        pz = self.mask(k, pz)
+        log_pz = -0.5*z*z - math.log(math.sqrt(2*math.pi))
+        log_pz = self.mask(k, log_pz)
         # Sum along Seq-Length AND Latent Dim
-        pz = pz.view(pz.size(0), pz.size(1) * pz.size(2))
-        return torch.sum(pz, 1)
+        log_pz = log_pz.view(log_pz.size(0), log_pz.size(1) * log_pz.size(2))
+        return torch.sum(log_pz, 1)
 
 
     def q_phi(self, mu, sigma, k, z):
         '''Returns Log Density of z given length k under the
            approximate posterior q_phi(z | x, k).
         '''
-	density = -0.5 * (z-mu) * (z-mu) / sigma + math.log(1.0/math.sqrt(2*math.pi))
-        density = self.mask(k, density)
+	log_qf = -0.5 * torch.pow((z-mu), 2)
+        log_qf = log_qf / torch.pow(torch.exp(sigma), 2)
+        log_qf -= sigma + math.log(math.sqrt(2*math.pi))
+        log_qf = self.mask(k, log_qf)
         # Sum along Seq-Length AND Latent Dim
-        density = density.view(density.size(0),
-                               density.size(1)*density.size(2))
-        return torch.sum(density, 1)
+        log_qf = log_qf.view(log_qf.size(0),
+                               log_qf.size(1)*log_qf.size(2))
+        return torch.sum(log_qf, 1)
 
     def p_theta_y(self, output, targets):
         '''Computes Log Likelihood of Targets Given X.
@@ -460,6 +469,8 @@ class Loss(nn.Module):
         k_max = float(torch.max(k.data))
         mask = Variable(torch.range(0, k_max-1),
                         requires_grad=False)
+        if self.cuda:
+            mask = mask.cuda()
         mask = mask.unsqueeze(0).expand(batch_size, mask.size(0))
         mask = mask.ge(k.expand_as(mask))
         mask = mask.unsqueeze(2)
@@ -469,6 +480,15 @@ class Loss(nn.Module):
 
     def forward(self, outputs, mu, sigma, pi, k , z, targets, baseline, step):
         batch_size = pi.size(0)
+        ### Track Expexted Value of Length
+        range_ = Variable(torch.range(1,self.max_len)).unsqueeze(0)
+        E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
+        log_value('Expected Length', E_pi.data[0], step)
+        ### Track Means and Variance of Posterior
+        mu_flat = [m for l in mu for m in l]
+        sigma_flat = [s for l in sigma for s in l]
+        log_value('Mu_Avg', torch.stack(mu_flat).mean().data[0], step)
+        log_value('Sigma_Avg', torch.exp(torch.stack(sigma_flat)).mean().data[0], step)
         loss = self.kld_length(pi).div(batch_size)
         rs = []
         pty_ = 0.
@@ -486,19 +506,23 @@ class Loss(nn.Module):
                 ### Compute log q_phi(z_ij | x)
                 qfz = self.q_phi(mu[i][j], sigma[i][j], k_i, z[i][j])
                 qfz_ += qfz.mean()
-                ### Adding Lambda for KLD???
                 if not j:
-                    # r_i = (pty - self.lam(qfz + ptz)))
                     r_i = (pty - qfz + ptz)
                 else:
-                    # r_i += (pty - self.lam(qfz + ptz)))
                     r_i += (pty - qfz + ptz)
             loss -= r_i.mean()
             rs.append(r_i)
+        ### TODO: If self.reinforce > 1, Need to normalize (?)
+        ### OR: Remove self.reinforce
         r_sum = torch.stack(rs).clone().detach()
         r_sum = torch.sum(r_sum, 0).squeeze(0)
-        loss_bl = torch.pow(baseline - r_sum, 2).mean()
 	r_mean = torch.mean(r_sum)
+        elbo = -loss.clone().detach().div(self.sample)
+        if self.r_mean:
+            self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.clone().detach()
+        else:
+            self.r_mean = r_mean.clone().detach()
+        loss_bl = torch.pow(r_sum -baseline - self.r_mean.unsqueeze(0).expand_as(r_sum), 2).mean()
         bl = Variable(baseline.data, requires_grad=False)
         for i in range(self.sample):
             k_i = k[i]
@@ -510,11 +534,12 @@ class Loss(nn.Module):
             loss -= reinforcement.mean()
         loss = loss.div(self.sample)
         loss_bl = loss_bl.div(self.sample)
-        log_value('p_y_given_x', pty_.div(self.sample).data[0], step)
+        log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('p_z', ptz_.div(self.sample).data[0], step)
         log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
-        log_value('r_mean', r_mean.data[0], step)
+        log_value('r_mean_step', r_mean.data[0], step)
+        log_value('r_moving_avg', self.r_mean.data[0], step)
         log_value('loss', loss.data[0], step)
         log_value('loss BL', loss_bl.data[0], step)
-
-        return loss, r_mean, loss_bl
+        log_value('ELBO', elbo.data[0], step)
+        return loss, r_mean, loss_bl, elbo
