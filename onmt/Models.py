@@ -277,9 +277,9 @@ class DecoderLatent(nn.Module):
         mu = torch.stack(mu)
         sigma = torch.stack(sigma)
         # mask samples to length k
-        mask = Variable(torch.range(0, float(k_max-1)), requires_grad=False)
+        mask = Variable(torch.range(0, float(k_max)-1), requires_grad=False)
         if self.cuda:
-            mask = mask.cuda
+            mask = mask.cuda()
         mask = mask.unsqueeze(1).expand(mask.size(0), batch_size)
         mask = mask.ge(k.t().expand_as(mask))
         mask = mask.unsqueeze(2)
@@ -352,6 +352,7 @@ class NMTModel(nn.Module):
             out += [[]]
             z += [[]]
             k_i = pi.multinomial().float()
+            k_max = int(torch.max(k_i.data))
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
             ### Sample j times from sequence given length
@@ -406,7 +407,7 @@ class Loss(nn.Module):
         weight = torch.ones(vocabSize)
         weight[onmt.Constants.PAD] = 0
         crit = nn.NLLLoss(weight, size_average=False)
-        self.cuda = opt.cuda
+        self.gpu = opt.cuda
         self.crit = crit
         ### Latent Length Dist
         self.gamma = opt.gamma
@@ -417,7 +418,7 @@ class Loss(nn.Module):
         self.prior_len /= self.prior_len.sum()
         self.prior_len = Variable(self.prior_len, requires_grad=False)
         self.prior_len = self.prior_len.unsqueeze(0)
-        if self.cuda:
+        if self.gpu:
             self.prior_len = self.prior_len.cuda()
             self.crit = self.crit.cuda()
         self.r_mean = 0
@@ -469,7 +470,7 @@ class Loss(nn.Module):
         k_max = float(torch.max(k.data))
         mask = Variable(torch.range(0, k_max-1),
                         requires_grad=False)
-        if self.cuda:
+        if self.gpu:
             mask = mask.cuda()
         mask = mask.unsqueeze(0).expand(batch_size, mask.size(0))
         mask = mask.ge(k.expand_as(mask))
@@ -482,14 +483,18 @@ class Loss(nn.Module):
         batch_size = pi.size(0)
         ### Track Expexted Value of Length
         range_ = Variable(torch.range(1,self.max_len)).unsqueeze(0)
+        if self.gpu:
+            range_ = range_.cuda()
         E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
         log_value('Expected Length', E_pi.data[0], step)
         ### Track Means and Variance of Posterior
-        mu_flat = [m for l in mu for m in l]
-        sigma_flat = [s for l in sigma for s in l]
-        log_value('Mu_Avg', torch.stack(mu_flat).mean().data[0], step)
-        log_value('Sigma_Avg', torch.exp(torch.stack(sigma_flat)).mean().data[0], step)
+        #mu_flat = [m for l in mu for m in l]
+        #sigma_flat = [s for l in sigma for s in l]
+        #log_value('Mu_Avg', torch.stack(mu_flat).mean().data[0], step)
+        #log_value('Sigma_Avg', torch.exp(torch.stack(sigma_flat)).mean().data[0], step)
         loss = self.kld_length(pi).div(batch_size)
+        loss_report = loss.clone().detach()
+        log_value('KLD_Length', loss.data[0], step)
         rs = []
         pty_ = 0.
         qfz_ = 0.
@@ -511,6 +516,7 @@ class Loss(nn.Module):
                 else:
                     r_i += (pty - qfz + ptz)
             loss -= r_i.mean()
+            loss_report -= r_i.sum().clone().detach()
             rs.append(r_i)
         ### TODO: If self.reinforce > 1, Need to normalize (?)
         ### OR: Remove self.reinforce
@@ -534,6 +540,7 @@ class Loss(nn.Module):
             loss -= reinforcement.mean()
         loss = loss.div(self.sample)
         loss_bl = loss_bl.div(self.sample)
+        loss_report = loss_report.div(self.sample)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('p_z', ptz_.div(self.sample).data[0], step)
         log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
@@ -542,4 +549,4 @@ class Loss(nn.Module):
         log_value('loss', loss.data[0], step)
         log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
-        return loss, r_mean, loss_bl, elbo
+        return loss, loss_bl, loss_report

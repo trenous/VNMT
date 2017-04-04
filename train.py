@@ -150,14 +150,16 @@ def eval(model, criterion, data):
 def trainModel(model, trainData, validData, dataset, optim):
     print(model)
     model.train()
+    baseline = onmt.Models.BaseLine(opt)
+    baseline.train()
     if optim.last_ppl is None:
         for p in model.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
-
+        for p in baseline.parameters():
+            p.data.uniform_(-opt.param_init, opt.param_init)
     # define criterion of each GPU
     criterion = onmt.Models.Loss(opt, model.generator,
                             dataset['dicts']['tgt'].size())
-    baseline = onmt.Models.BaseLine(opt)
     if opt.cuda:
         criterion = criterion.cuda()
         baseline = baseline.cuda()
@@ -169,9 +171,6 @@ def trainModel(model, trainData, validData, dataset, optim):
         total_words, report_words = 0, 0
         report_src_words = 0
         start = time.time()
-	loss_ = numpy.Inf
-	reward_ = numpy.Inf
-        trainData
         for i in range(len(trainData)):
             step = i + (epoch-1) * len(trainData)
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
@@ -182,13 +181,13 @@ def trainModel(model, trainData, validData, dataset, optim):
             model.zero_grad()
             baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, r_mean, loss_bl, elbo = criterion.forward(outputs, mu, sigma, pi, k, z, targets, base_line, step)
+            loss, loss_bl, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, base_line, step)
             loss.backward()
             loss_bl.backward()
             # update the parameters
             grad_norm = optim.step()
-            report_loss -= elbo
-            total_loss -= elbo
+            report_loss += loss_report
+            total_loss += loss_report
             report_src_words += batch[0].data.ne(onmt.Constants.PAD).sum()
             num_words = targets.data.ne(onmt.Constants.PAD).sum()
             total_words += num_words
@@ -196,7 +195,7 @@ def trainModel(model, trainData, validData, dataset, optim):
             if i % opt.log_interval == 0 and i > 0:
                 print("Epoch %2d, %5d/%5d batches; perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
                       (epoch, i, len(trainData),
-                      numpy.exp(report_loss.data.numpy()[0] / report_words),
+                      math.exp(report_loss.data[0] / report_words),
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
 
