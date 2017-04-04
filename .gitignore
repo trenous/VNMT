@@ -1,8 +1,7 @@
-dcgan/data
 data
-runs/*
+runs
 *.pyc
-OpenNMT/data
 *.pt
 *.swp
 *.tar.gz
+*~
