@@ -487,14 +487,8 @@ class Loss(nn.Module):
             range_ = range_.cuda()
         E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
         log_value('Expected Length', E_pi.data[0], step)
-        ### Track Means and Variance of Posterior
-        #mu_flat = [m for l in mu for m in l]
-        #sigma_flat = [s for l in sigma for s in l]
-        #log_value('Mu_Avg', torch.stack(mu_flat).mean().data[0], step)
-        #log_value('Sigma_Avg', torch.exp(torch.stack(sigma_flat)).mean().data[0], step)
-        loss = self.kld_length(pi).div(batch_size)
-        loss_report = loss.clone().detach()
-        log_value('KLD_Length', loss.data[0], step)
+        loss = 0. 
+        loss_report = 0. 
         rs = []
         pty_ = 0.
         qfz_ = 0.
@@ -523,12 +517,13 @@ class Loss(nn.Module):
         r_sum = torch.stack(rs).clone().detach()
         r_sum = torch.sum(r_sum, 0).squeeze(0)
 	r_mean = torch.mean(r_sum)
-        elbo = -loss.clone().detach().div(self.sample)
+        kld_len = self.kld_length(pi)
+        elbo = -loss.clone().detach().div(self.sample) - kld_len.div(batch_size)
         if self.r_mean:
-            self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.clone().detach()
+            self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.data[0]
         else:
-            self.r_mean = r_mean.clone().detach()
-        loss_bl = torch.pow(r_sum -baseline - self.r_mean.unsqueeze(0).expand_as(r_sum), 2).mean()
+            self.r_mean = r_mean.data[0]
+        loss_bl = torch.pow(r_sum -baseline - self.r_mean, 2).mean()
         bl = Variable(baseline.data, requires_grad=False)
         for i in range(self.sample):
             k_i = k[i]
@@ -541,12 +536,17 @@ class Loss(nn.Module):
         loss = loss.div(self.sample)
         loss_bl = loss_bl.div(self.sample)
         loss_report = loss_report.div(self.sample)
+        loss += kld_len.div(batch_size)
+        loss_report += kld_len
+        log_value('KLD', (kld_len.div(batch_size) + (qfz_ - pty_).div(self.sample)).data[0], step)
+        log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('p_z', ptz_.div(self.sample).data[0], step)
         log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
         log_value('r_mean_step', r_mean.data[0], step)
-        log_value('r_moving_avg', self.r_mean.data[0], step)
+        log_value('r_moving_avg', self.r_mean, step)
         log_value('loss', loss.data[0], step)
         log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
-        return loss, loss_bl, loss_report
+        log_value('loss_report', loss_report.data[0], step)
+        return loss, loss_bl, loss_report.data[0]
