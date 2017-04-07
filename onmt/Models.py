@@ -479,14 +479,15 @@ class Loss(nn.Module):
         return vec
 
 
-    def forward(self, outputs, mu, sigma, pi, k , z, targets, baseline, step):
+    def forward(self, outputs, mu, sigma, pi, k , z, targets, baseline=None, step=None):
         batch_size = pi.size(0)
         ### Track Expexted Value of Length
-        range_ = Variable(torch.range(1,self.max_len)).unsqueeze(0)
-        if self.gpu:
-            range_ = range_.cuda()
-        E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
-        log_value('Expected Length', E_pi.data[0], step)
+        if self.training:
+            range_ = Variable(torch.range(1,self.max_len)).unsqueeze(0)
+            if self.gpu:
+                range_ = range_.cuda()
+            E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
+            log_value('Expected Length', E_pi.data[0], step)
         loss = 0. 
         loss_report = 0. 
         rs = []
@@ -515,30 +516,31 @@ class Loss(nn.Module):
         ### TODO: If self.reinforce > 1, Need to normalize (?)
         ### OR: Remove self.reinforce
         r_sum = torch.stack(rs).clone().detach()
-        r_sum = torch.sum(r_sum, 0).squeeze(0)
 	r_mean = torch.mean(r_sum)
+        r_sum = torch.sum(r_sum, 0).squeeze(0)
         kld_len = self.kld_length(pi)
         elbo = -loss.clone().detach().div(self.sample) - kld_len.div(batch_size)
+        if not self.training:
+            return None, elbo.data[0], (loss_report.div(self.sample) + kld_len).data[0]
         if self.r_mean:
             self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.data[0]
         else:
             self.r_mean = r_mean.data[0]
-        loss_bl = torch.pow(r_sum -baseline - self.r_mean, 2).mean()
+        loss_bl = torch.pow(r_sum.div(self.sample) -baseline - self.r_mean, 2).mean()
         bl = Variable(baseline.data, requires_grad=False)
         for i in range(self.sample):
             k_i = k[i]
             # Copy Prevents Backprop Through Rewards
             r = Variable(rs[i].data, requires_grad=False)
             RE_grad = torch.log(torch.gather(pi, 1, k_i.long()))
-            reward = r - r_mean.unsqueeze(0).expand_as(r)
-            reinforcement = self.lam *(reward - bl) * RE_grad
+            reward_adjusted = r - self.r_mean - bl
+            reinforcement = self.lam * reward_adjusted * RE_grad
             loss -= reinforcement.mean()
         loss = loss.div(self.sample)
-        loss_bl = loss_bl.div(self.sample)
         loss_report = loss_report.div(self.sample)
         loss += kld_len.div(batch_size)
         loss_report += kld_len
-        log_value('KLD', (kld_len.div(batch_size) + (qfz_ - pty_).div(self.sample)).data[0], step)
+        log_value('KLD', (kld_len.div(batch_size) + (qfz_ - ptz_).div(self.sample)).data[0], step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('p_z', ptz_.div(self.sample).data[0], step)
