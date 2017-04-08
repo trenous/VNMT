@@ -120,7 +120,7 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
-
+opt.kl_weights = [0.0000001,0.1,0.6,1.0]
 print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
@@ -174,7 +174,10 @@ def trainModel(model, trainData, validData, dataset, optim):
         total_words, report_words = 0, 0
         report_src_words = 0
         start = time.time()
-        for i in range(len(trainData)):
+        N = len(trainData)
+        for i in range(N):
+            i = float(i)
+            kl_weight = (1-i/N) * opt.kl_w + (i/N)*opt.kl_w_n 
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
@@ -184,7 +187,7 @@ def trainModel(model, trainData, validData, dataset, optim):
             model.zero_grad()
             baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, baseline=base_line, step=step)
+            loss, loss_bl, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
             loss.backward()
             loss_bl.backward()
             # update the parameters
@@ -196,8 +199,8 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
-                print("Epoch %2d, %5d/%5d batches; perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
-                      (epoch, i, len(trainData),
+                print("Epoch %2d, %5d/%5d batches; kl weight %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
+                      (epoch, i, len(trainData), kl_weight,
                       math.exp(min(100, report_loss / report_words)),
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
@@ -211,6 +214,8 @@ def trainModel(model, trainData, validData, dataset, optim):
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
         print 'Learning Rate: ', opt.learning_rate
+        opt.kl_w = 1.0 if epoch > len(opt.kl_weights) else opt.kl_weights[epoch-1]
+        opt.kl_w_next = 1.0 if epoch+1 > len(opt.kl_weights) else opt.kl_weights[epoch]
         #  (1) train for one epoch on the training set
         train_loss = trainEpoch(epoch)
         print('Train perplexity: %g' % math.exp(min(train_loss, 100)))

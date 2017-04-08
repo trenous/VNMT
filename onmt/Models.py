@@ -479,7 +479,7 @@ class Loss(nn.Module):
         return vec
 
 
-    def forward(self, outputs, mu, sigma, pi, k , z, targets, baseline=None, step=None):
+    def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         batch_size = pi.size(0)
         ### Track Expexted Value of Length
         if self.training:
@@ -507,9 +507,9 @@ class Loss(nn.Module):
                 qfz = self.q_phi(mu[i][j], sigma[i][j], k_i, z[i][j])
                 qfz_ += qfz.mean()
                 if not j:
-                    r_i = (pty - qfz + ptz)
+                    r_i = (pty - kl_weight*(qfz - ptz))
                 else:
-                    r_i += (pty - qfz + ptz)
+                    r_i += (pty - kl_weight*(qfz - ptz))
             loss -= r_i.mean()
             loss_report -= r_i.sum().clone().detach()
             rs.append(r_i)
