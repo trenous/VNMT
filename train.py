@@ -182,12 +182,12 @@ def trainModel(model, trainData, validData, dataset, optim):
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-            outputs, mu, sigma, pi, k, z, context = model(batch)
+            outputs, mu, sigma, pi, k, z, context, out_p = model(batch)
             base_line = baseline(context)
             model.zero_grad()
             baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
+            loss, loss_bl, loss_report = criterion.forward(outputs, out_p, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
             loss.backward()
             loss_bl.backward()
             # update the parameters

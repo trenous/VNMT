@@ -345,13 +345,15 @@ class NMTModel(nn.Module):
         sigma = []
         out = []
         z = []
+        out_p = []
         ## Sample i times from length dist
         for i in range(self.sample):
             mu += [[]]
             sigma += [[]]
             out += [[]]
             z += [[]]
-            k_i = pi.multinomial().float()
+            out_p += [[]]
+            k_i = Variable(torch.ones(enc_hidden[0].size(1), 1), requires_grad=False)
             k_max = int(torch.max(k_i.data))
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
@@ -371,14 +373,26 @@ class NMTModel(nn.Module):
                                                       enc_hidden,
                                                       context,
                                                       init_output)
+                z_p = Variable(torch.randn(z_ij.size()), requires_grad=False)
+                enc_hidden_p, context_p = self.encoder_l(z_p)
+                init_output = self.make_init_decoder_output(context_p,
+                                                            self.decoder)
+                enc_hidden_p = (self._fix_enc_hidden(enc_hidden_p[0]),
+                              self._fix_enc_hidden(enc_hidden_p[1]))
+                out_p_ij, dec_hidden_p, _attn_p = self.decoder(tgt,
+                                                      enc_hidden_p,
+                                                      context_p,
+                                                      init_output)
+
                 mu[i] += [mu_ij]
                 sigma[i] += [sigma_ij]
                 z[i] += [z_ij]
                 out[i] += [out_ij]
+                out_p[i] += [out_p_ij]
                 if self.generate:
                     out = self.generator(out)
 
-        return out, mu, sigma, pi, k, z, context_
+        return out, mu, sigma, pi, k, z, context_, out_p
 
 class BaseLine(nn.Module):
     '''Input-dependent baseline for REINFORCE.
@@ -451,7 +465,7 @@ class Loss(nn.Module):
                                log_qf.size(1)*log_qf.size(2))
         return torch.sum(log_qf, 1)
 
-    def p_theta_y(self, output, targets):
+    def p_theta_y(self, output, out_p, targets):
         '''Computes Log Likelihood of Targets Given X.
         '''
         output = output.contiguous().view(-1, output.size(2))
@@ -460,7 +474,13 @@ class Loss(nn.Module):
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
         pty = torch.sum(gathered.squeeze(), 1)
-        return pty
+        out_p = out_p.contiguous().view(-1, out_p.size(2))
+        pred = self.generator(out_p)
+        pred = pred.view(targets.size(0), targets.size(1), pred.size(1))
+        gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
+        gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
+        pty_p = torch.sum(gathered.squeeze(), 1)
+        return pty, pty_p
 
 
     def mask(self, k, vec):
@@ -479,7 +499,8 @@ class Loss(nn.Module):
         return vec
 
 
-    def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
+    def forward(self, outputs, out_p, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
+        kl_weight = 0.0
         batch_size = pi.size(0)
         ### Track Expexted Value of Length
         if self.training:
@@ -488,18 +509,20 @@ class Loss(nn.Module):
                 range_ = range_.cuda()
             E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
             log_value('Expected Length', E_pi.data[0], step)
-        loss = 0. 
-        loss_report = 0. 
+        loss = 0.
+        loss_report = 0.
         rs = []
         pty_ = 0.
         qfz_ = 0.
         ptz_ = 0.
+        pty_p_ = 0.
         for i in range(self.sample):
             k_i = k[i]
             for j in range(self.reinforce):
                 ### Compute log p_theta(y|z_ij):
-                pty = self.p_theta_y(outputs[i][j], targets)
+                pty, pty_p = self.p_theta_y(outputs[i][j], out_p[i][j], targets)
                 pty_ += pty.mean()
+                pty_p_ += pty_p.mean()
                 ### Compute log p_theta(z_ij)
                 ptz = self.p_theta_z(z[i][j], k_i)
                 ptz_ += ptz.mean()
@@ -535,7 +558,7 @@ class Loss(nn.Module):
             RE_grad = torch.log(torch.gather(pi, 1, k_i.long()))
             reward_adjusted = r - self.r_mean - bl
             reinforcement = self.lam * reward_adjusted * RE_grad
-            loss -= reinforcement.mean()
+            #loss -= reinforcement.mean()
         loss = loss.div(self.sample)
         loss_report = loss_report.div(self.sample)
         loss += kl_weight * kld_len.div(batch_size)
@@ -543,6 +566,7 @@ class Loss(nn.Module):
         log_value('KLD', (kld_len.div(batch_size) + (qfz_ - ptz_).div(self.sample)).data[0], step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
+        log_value('p_y', pty_p_.div(self.sample).data[0], step)
         log_value('p_z', ptz_.div(self.sample).data[0], step)
         log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
         log_value('r_mean_step', r_mean.data[0], step)
