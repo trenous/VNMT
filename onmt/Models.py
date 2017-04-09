@@ -43,31 +43,6 @@ class Encoder(nn.Module):
         return hidden_t, outputs
 
 
-class EncoderLatent(nn.Module):
-
-    def __init__(self, opt):
-        self.layers = opt.layers
-        self.num_directions = 2 if opt.brnn else 1
-        assert opt.rnn_size % self.num_directions == 0
-        self.hidden_size = opt.rnn_size // self.num_directions
-        inputSize = opt.latent_vec_size
-
-        super(EncoderLatent, self).__init__()
-        self.rnn = nn.LSTM(inputSize, self.hidden_size,
-                        num_layers=opt.layers,
-                        dropout=opt.dropout,
-                        bidirectional=opt.brnn)
-
-    def forward(self, input, hidden=None):
-        batch_size = input.size(0) # batch first for multi-gpu compatibility
-        if hidden is None:
-            h_size = (self.layers * self.num_directions, batch_size, self.hidden_size)
-            h_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
-            c_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
-            hidden = (h_0, c_0)
-        outputs, hidden_t = self.rnn(input.transpose(0,1), hidden)
-        return hidden_t, outputs
-
 
 class StackedLSTM(nn.Module):
     def __init__(self, num_layers, input_size, rnn_size, dropout):
@@ -85,6 +60,7 @@ class StackedLSTM(nn.Module):
         h_1, c_1 = [], []
         for i in range(self.num_layers):
             layer = getattr(self, 'layer_%d' % i)
+            print 'h, c sizes:', h_0[i].size(), c_0[i].size()
             h_1_i, c_1_i = layer(input, (h_0[i], c_0[i]))
             input = h_1_i
             if i + 1 != self.num_layers:
