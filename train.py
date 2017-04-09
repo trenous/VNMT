@@ -120,7 +120,6 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
-opt.kl_weights = [1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1]
 print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
@@ -135,16 +134,13 @@ def eval(model, criterion, data, epoch):
 
     model.eval()
     criterion.eval()
-    elbo = 0.0
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
+        outputs = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _, elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
-        elbo += elbo_
+        _, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
-    log_value('elbo validation', elbo / len(data), epoch)
     model.train()
     criterion.train()
     return total_loss / total_words
@@ -153,19 +149,14 @@ def eval(model, criterion, data, epoch):
 def trainModel(model, trainData, validData, dataset, optim):
     print(model)
     model.train()
-    baseline = onmt.Models.BaseLine(opt)
-    baseline.train()
     if optim.last_ppl is None:
         for p in model.parameters():
-            p.data.uniform_(-opt.param_init, opt.param_init)
-        for p in baseline.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
     # define criterion of each GPU
     criterion = onmt.Models.Loss(opt, model.generator,
                             dataset['dicts']['tgt'].size())
     if opt.cuda:
         criterion = criterion.cuda()
-        baseline = baseline.cuda()
     start_time = time.time()
     def trainEpoch(epoch):
         #shuffle mini batch order
@@ -176,20 +167,15 @@ def trainModel(model, trainData, validData, dataset, optim):
         start = time.time()
         N = len(trainData)
         for i in range(N):
-            j = float(i)
-            kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-            outputs, mu, sigma, pi, k, z, context, out_p = model(batch)
-            base_line = baseline(context)
+            outputs = model(batch)
             model.zero_grad()
-            baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report = criterion.forward(outputs, out_p, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
+            loss, loss_report = criterion.forward(outputs, targets, step=step)
             loss.backward()
-            loss_bl.backward()
             # update the parameters
             grad_norm = optim.step()
             report_loss += loss_report
@@ -199,8 +185,8 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
-                print("Epoch %2d, %5d/%5d batches; kl weight %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
-                      (epoch, i, len(trainData), kl_weight,
+                print("Epoch %2d, %5d/%5d batches;  perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
+                      (epoch, i, len(trainData),
                       math.exp(min(100, report_loss / report_words)),
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
@@ -208,14 +194,10 @@ def trainModel(model, trainData, validData, dataset, optim):
                 report_loss = report_words = report_src_words = 0
                 start = time.time()
             ### Logging
-            log_value('baseline', base_line.mean().data[0], step)
         return total_loss / total_words
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
-        print 'Learning Rate: ', opt.learning_rate
-        opt.kl_w = 1.0 if epoch > len(opt.kl_weights) else opt.kl_weights[epoch-1]
-        opt.kl_w_next = 1.0 if epoch+1 > len(opt.kl_weights) else opt.kl_weights[epoch]
         #  (1) train for one epoch on the training set
         train_loss = trainEpoch(epoch)
         print('Train perplexity: %g' % math.exp(min(train_loss, 100)))
@@ -267,18 +249,12 @@ def main():
     if opt.train_from is None:
         encoder = onmt.Models.Encoder(opt, dicts['src'])
         decoder = onmt.Models.Decoder(opt, dicts['tgt'])
-        decoderlatent = onmt.Models.DecoderLatent(opt)
-        encoderlatent = onmt.Models.EncoderLatent(opt)
-        lengthnet = onmt.Models.LengthNet(opt)
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
             nn.LogSoftmax())
         if opt.cuda > 1:
             generator = nn.DataParallel(generator, device_ids=opt.gpus)
         model = onmt.Models.NMTModel(encoder,
-                                     lengthnet,
-                                     decoderlatent,
-                                     encoderlatent,
                                      decoder,
                                      generator,
                                      opt)
