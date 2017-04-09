@@ -120,7 +120,7 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
-opt.kl_weights = [1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1]
+opt.kl_weights = [1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1]
 print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:

@@ -230,7 +230,7 @@ class DecoderLatent(nn.Module):
         sigma = []
         z_i = z_0
 
-        for i in xrange(10):
+        for i in xrange(50):
             z_i = torch.cat((z_i, attn), 1)
             output, (h_1, c_1) = self.rnn(z_i, hidden)
             hidden = (h_1, c_1)
