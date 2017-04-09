@@ -502,13 +502,7 @@ class Loss(nn.Module):
     def forward(self, outputs, out_p, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         kl_weight = 0.0
         batch_size = pi.size(0)
-        ### Track Expexted Value of Length
-        if self.training:
-            range_ = Variable(torch.range(1,self.max_len)).unsqueeze(0)
-            if self.gpu:
-                range_ = range_.cuda()
-            E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
-            log_value('Expected Length', E_pi.data[0], step)
+
         loss = 0.
         loss_report = 0.
         rs = []
@@ -564,15 +558,9 @@ class Loss(nn.Module):
         loss += kl_weight * kld_len.div(batch_size)
         loss_report += kld_len
         log_value('KLD', (kld_len.div(batch_size) + (qfz_ - ptz_).div(self.sample)).data[0], step)
-        log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('p_y', pty_p_.div(self.sample).data[0], step)
-        log_value('p_z', ptz_.div(self.sample).data[0], step)
-        log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
-        log_value('r_mean_step', r_mean.data[0], step)
-        log_value('r_moving_avg', self.r_mean, step)
         log_value('loss', loss.data[0], step)
-        log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
         log_value('loss_report', loss_report.data[0], step)
         return loss, loss_bl, loss_report.data[0]
