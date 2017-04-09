@@ -135,16 +135,13 @@ def eval(model, criterion, data, epoch):
 
     model.eval()
     criterion.eval()
-    elbo = 0.0
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
+        outputs, mu, sigma, pi, z, _ = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _, elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
-        elbo += elbo_
+        _,  loss_report = criterion.forward(outputs, mu, sigma, pi, z, targets)
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
-    log_value('elbo validation', elbo / len(data), epoch)
     model.train()
     criterion.train()
     return total_loss / total_words
@@ -182,12 +179,11 @@ def trainModel(model, trainData, validData, dataset, optim):
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-            outputs, mu, sigma, pi, k, z, context, out_p = model(batch)
-            base_line = baseline(context)
+            outputs, mu, sigma, pi, z, out_p = model(batch)
             model.zero_grad()
             baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report = criterion.forward(outputs, out_p, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
+            loss, loss_report = criterion.forward(outputs, out_p, mu, sigma, pi, z, targets, kl_weight = kl_weight, step=step)
             loss.backward()
             loss_bl.backward()
             # update the parameters
@@ -207,8 +203,6 @@ def trainModel(model, trainData, validData, dataset, optim):
 
                 report_loss = report_words = report_src_words = 0
                 start = time.time()
-            ### Logging
-            log_value('baseline', base_line.mean().data[0], step)
         return total_loss / total_words
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
