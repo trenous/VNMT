@@ -201,7 +201,7 @@ class DecoderLatent(nn.Module):
         self.layers = opt.layers
         self.input_feed = opt.input_feed
         self.sample = opt.sample
-        input_size = opt.latent_vec_size + 1 # Also Feed Length k at each step
+        input_size = opt.latent_vec_size
         self.generator = GeneratorLatent(opt)
         input_size += opt.rnn_size # Also Feed Attention at each step
         self.rnn = StackedLSTM(opt.layers, input_size, opt.rnn_size, opt.dropout)
@@ -222,7 +222,6 @@ class DecoderLatent(nn.Module):
         k: batch x 1
         '''
         h_0, c_0 = hidden
-        k_max = int(torch.max(k.data)) #Longest Word in Batch to Sample
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
         attn = self.attn(c_0[-1], context.t())
@@ -232,9 +231,7 @@ class DecoderLatent(nn.Module):
         z_i = z_0
 
         for i in xrange(50):
-            z_i = torch.cat([z_i, k], 1) # Append Length To Input
             z_i = torch.cat((z_i, attn), 1)
-            ### Fixed Hidden as hidden <= mask*hidden + (1-mask)*old_hidden
             output, (h_1, c_1) = self.rnn(z_i, hidden)
             hidden = (h_1, c_1)
             z_i, mu_i, sigma_i = self.generator(output)
@@ -265,6 +262,7 @@ class NMTModel(nn.Module):
         self.encoder_l = encoderlatent
         self.generator = generator
         self.generate = False
+        self.cuda = opt.cuda
 
     def set_generate(self, enabled):
         self.generate = enabled
@@ -307,8 +305,11 @@ class NMTModel(nn.Module):
                                               enc_hidden,
                                               context,
                                               init_output)
-        z_p = Variable(torch.randn(z.size()), requires_grad=False).cuda()
-        
+        ## Making Sure we are not only learning a language model in the Decoder
+        z_p = Variable(torch.randn(z.size()), requires_grad=False)
+        if self.cuda:
+            z_p = z_p.cuda()
+
         enc_hidden_p, context_p = self.encoder_l(z_p)
         init_output = self.make_init_decoder_output(context_p,
                                                     self.decoder)
@@ -318,11 +319,11 @@ class NMTModel(nn.Module):
                                                     enc_hidden_p,
                                                     context_p,
                                                     init_output)
-                
+
         if self.generate:
             out = self.generator(out)
 
-        return out, mu, sigma, pi, k, z, out_p
+        return out, mu, sigma, z, out_p
 
 
 class Loss(nn.Module):
@@ -356,14 +357,12 @@ class Loss(nn.Module):
         pred = pred.view(targets.size(0), targets.size(1), pred.size(1))
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
-        pty = torch.sum(gathered.squeeze(), 1)
-        return pty
+        return gathered.sum()
 
 
 
-    def forward(self, outputs, out_p, mu, sigma, pi , z, targets, kl_weight=1, step=None):
+    def forward(self, outputs, out_p, mu, sigma, z, targets, kl_weight=1, step=None):
         batch_size = z.size(0)
-        print 'batch_size: ', batch_size
         loss = 0.
         loss_report = 0.
         ### Compute log p_theta(y|z_ij):
@@ -372,7 +371,7 @@ class Loss(nn.Module):
         ### Compute log p_theta(z_ij)
         ptz = self.p_theta_z(z)
         ### Compute log q_phi(z_ij | x)
-        qfz = self.q_phi(mu, sigma, z) 
+        qfz = self.q_phi(mu, sigma, z)
         loss -= pty - kl_weight *(qfz + ptz)
         loss_report = loss.data[0]
         loss = loss.div(batch_size)

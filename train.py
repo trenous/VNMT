@@ -137,9 +137,9 @@ def eval(model, criterion, data, epoch):
     criterion.eval()
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, pi, z, _ = model(batch)  # FIXME volatile
+        outputs, mu, sigma, z = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _,  loss_report = criterion.forward(outputs, mu, sigma, pi, z, targets)
+        _,  loss_report = criterion.forward(outputs, mu, sigma, z, targets)
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
     model.train()
@@ -150,19 +150,14 @@ def eval(model, criterion, data, epoch):
 def trainModel(model, trainData, validData, dataset, optim):
     print(model)
     model.train()
-    baseline = onmt.Models.BaseLine(opt)
-    baseline.train()
     if optim.last_ppl is None:
         for p in model.parameters():
-            p.data.uniform_(-opt.param_init, opt.param_init)
-        for p in baseline.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
     # define criterion of each GPU
     criterion = onmt.Models.Loss(opt, model.generator,
                             dataset['dicts']['tgt'].size())
     if opt.cuda:
         criterion = criterion.cuda()
-        baseline = baseline.cuda()
     start_time = time.time()
     def trainEpoch(epoch):
         #shuffle mini batch order
@@ -179,13 +174,11 @@ def trainModel(model, trainData, validData, dataset, optim):
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-            outputs, mu, sigma, pi, z, out_p = model(batch)
+            outputs, mu, sigma, z, out_p = model(batch)
             model.zero_grad()
-            baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_report = criterion.forward(outputs, out_p, mu, sigma, pi, z, targets, kl_weight = kl_weight, step=step)
+            loss, loss_report = criterion.forward(outputs, out_p, mu, sigma,  z, targets, kl_weight = kl_weight, step=step)
             loss.backward()
-            loss_bl.backward()
             # update the parameters
             grad_norm = optim.step()
             report_loss += loss_report
@@ -261,18 +254,16 @@ def main():
     if opt.train_from is None:
         encoder = onmt.Models.Encoder(opt, dicts['src'])
         decoder = onmt.Models.Decoder(opt, dicts['tgt'])
-        decoderlatent = onmt.Models.DecoderLatent(opt)
-        encoderlatent = onmt.Models.EncoderLatent(opt)
-        lengthnet = onmt.Models.LengthNet(opt)
+        decoder_l = onmt.Models.DecoderLatent(opt)
+        encoder_l = onmt.Models.EncoderLatent(opt)
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
             nn.LogSoftmax())
         if opt.cuda > 1:
             generator = nn.DataParallel(generator, device_ids=opt.gpus)
         model = onmt.Models.NMTModel(encoder,
-                                     lengthnet,
-                                     decoderlatent,
-                                     encoderlatent,
+                                     decoder_l,
+                                     encoder_l,
                                      decoder,
                                      generator,
                                      opt)
