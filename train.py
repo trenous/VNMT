@@ -137,9 +137,9 @@ def eval(model, criterion, data, epoch):
     criterion.eval()
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, z = model(batch)  # FIXME volatile
+        outputs, mu, sigma, z, out_p = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _,  loss_report = criterion.forward(outputs, mu, sigma, z, targets)
+        _,  loss_report = criterion.forward(outputs, out_p, mu, sigma, z, targets)
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
     model.train()
@@ -270,6 +270,8 @@ def main():
         if opt.cuda > 1:
             model = nn.DataParallel(model, device_ids=opt.gpus)
         if opt.cuda:
+            print type(model)
+            print type(model.cuda)
             model.cuda()
         else:
             model.cpu()

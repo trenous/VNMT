@@ -262,7 +262,7 @@ class NMTModel(nn.Module):
         self.encoder_l = encoderlatent
         self.generator = generator
         self.generate = False
-        self.cuda = opt.cuda
+        self.gpu = opt.cuda
 
     def set_generate(self, enabled):
         self.generate = enabled
@@ -307,7 +307,7 @@ class NMTModel(nn.Module):
                                               init_output)
         ## Making Sure we are not only learning a language model in the Decoder
         z_p = Variable(torch.randn(z.size()), requires_grad=False)
-        if self.cuda:
+        if self.gpu:
             z_p = z_p.cuda()
 
         enc_hidden_p, context_p = self.encoder_l(z_p)
@@ -372,7 +372,7 @@ class Loss(nn.Module):
         ptz = self.p_theta_z(z)
         ### Compute log q_phi(z_ij | x)
         qfz = self.q_phi(mu, sigma, z)
-        loss -= pty - kl_weight *(qfz + ptz)
+        loss -= pty - kl_weight *(qfz - ptz)
         loss_report = loss.data[0]
         loss = loss.div(batch_size)
         if not self.training:
