@@ -355,7 +355,7 @@ class NMTModel(nn.Module):
             out_p += [[]]
             k_i = Variable(torch.ones(enc_hidden[0].size(1), 1), requires_grad=False)
             k_max = int(torch.max(k_i.data))
-            k_i = Variable(k_i.data, requires_grad=False)
+            k_i = Variable(k_i.data, requires_grad=False).cuda()
             k += [k_i]
             ### Sample j times from sequence given length
             for j in range(self.sample_reinforce):
@@ -373,7 +373,8 @@ class NMTModel(nn.Module):
                                                       enc_hidden,
                                                       context,
                                                       init_output)
-                z_p = Variable(torch.randn(z_ij.size()), requires_grad=False)
+                z_p = Variable(torch.randn(z_ij.size()), requires_grad=False).cuda()
+                
                 enc_hidden_p, context_p = self.encoder_l(z_p)
                 init_output = self.make_init_decoder_output(context_p,
                                                             self.decoder)
@@ -475,11 +476,11 @@ class Loss(nn.Module):
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
         pty = torch.sum(gathered.squeeze(), 1)
         out_p = out_p.contiguous().view(-1, out_p.size(2))
-        pred = self.generator(out_p)
-        pred = pred.view(targets.size(0), targets.size(1), pred.size(1))
-        gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
-        gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
-        pty_p = torch.sum(gathered.squeeze(), 1)
+        pred_p = self.generator(out_p)
+        pred_p = pred.view(targets.size(0), targets.size(1), pred_p.size(1))
+        gathered_p = torch.gather(pred_p, 2,  targets.unsqueeze(2)).squeeze()
+        gathered_p = gathered_p.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
+        pty_p = torch.sum(gathered_p.squeeze(), 1)
         return pty, pty_p
 
 
