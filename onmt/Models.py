@@ -254,7 +254,7 @@ class DecoderLatent(nn.Module):
         sigma = []
         z_i = z_0
 
-        for i in range(k_max):
+        for i in xrange(k_max):
             z_i = torch.cat([z_i, k], 1) # Append Length To Input
             z_i = torch.cat((z_i, attn), 1)
             ### Fixed Hidden as hidden <= mask*hidden + (1-mask)*old_hidden
@@ -538,7 +538,7 @@ class Loss(nn.Module):
             loss -= reinforcement.mean()
         loss = loss.div(self.sample)
         loss_report = loss_report.div(self.sample)
-        loss += kld_len.div(batch_size)
+        loss += kl_weight * kld_len.div(batch_size)
         loss_report += kld_len
         log_value('KLD', (kld_len.div(batch_size) + (qfz_ - ptz_).div(self.sample)).data[0], step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)

@@ -49,7 +49,7 @@ parser.add_argument('-brnn_merge', default='concat',
 
 parser.add_argument('-batch_size', type=int, default=4,
                     help='Maximum batch size')
-parser.add_argument('-epochs', type=int, default=20,
+parser.add_argument('-epochs', type=int, default=30,
                     help='Number of training epochs')
 parser.add_argument('-start_epoch', type=int, default=1,
                     help='The epoch from which to start')
@@ -72,7 +72,7 @@ parser.add_argument('-learning_rate_decay', type=float, default=0.5,
                     help="""Decay learning rate by this much if (i) perplexity
                     does not decrease on the validation set or (ii) epoch has
                     gone past the start_decay_at_limit""")
-parser.add_argument('-start_decay_at', default=8,
+parser.add_argument('-start_decay_at', default=20,
                     help="Start decay after this epoch")
 parser.add_argument('-curriculum', action="store_true",
                     help="""For this many epochs, order the minibatches based
@@ -120,7 +120,7 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
-opt.kl_weights = [0.0000001,0.1,0.6,1.0]
+opt.kl_weights = [1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1]
 print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
