@@ -138,7 +138,7 @@ def eval(model, criterion, data, epoch):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
         outputs = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
+        _, loss_report = criterion.forward(outputs, targets, step=0)
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
     model.train()

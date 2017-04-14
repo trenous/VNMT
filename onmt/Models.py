@@ -60,7 +60,6 @@ class StackedLSTM(nn.Module):
         h_1, c_1 = [], []
         for i in range(self.num_layers):
             layer = getattr(self, 'layer_%d' % i)
-            print 'h, c sizes:', h_0[i].size(), c_0[i].size()
             h_1_i, c_1_i = layer(input, (h_0[i], c_0[i]))
             input = h_1_i
             if i + 1 != self.num_layers:
@@ -187,8 +186,6 @@ class NMTModel(nn.Module):
         ### Target Decoding
         init_output = self.make_init_decoder_output(context,
                                                     self.decoder)
-        enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
-                      self._fix_enc_hidden(enc_hidden[1]))
         out, dec_hidden, _attn = self.decoder(tgt,
                                               enc_hidden,
                                               context,
@@ -224,6 +221,7 @@ class Loss(nn.Module):
         loss = -self.p_theta_y(outputs, targets)
         loss_report = loss.sum().data[0]
         loss = loss.mean()
-        log_value('loss', loss.data[0], step)
-        log_value('loss_report', loss_report, step)
+        if self.training:
+            log_value('loss', loss.data[0], step)
+            log_value('loss_report', loss_report, step)
         return loss, loss_report
