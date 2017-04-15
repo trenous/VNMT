@@ -455,12 +455,14 @@ class Loss(nn.Module):
         '''Computes Log Likelihood of Targets Given X.
         '''
         output = output.contiguous().view(-1, output.size(2))
-        pred = self.generator(output)
-        pred = pred.view(targets.size(0), targets.size(1), pred.size(1))
+        scores = self.generator(output)
+        pred = scores.max(1)[1]
+        num_correct = pred.data.eq(targets.data).masked_select(targets.ne(onmt.Constants.PAD).data).sum()
+        pred = scores.view(targets.size(0), targets.size(1), scores.size(1))
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
         pty = torch.sum(gathered.squeeze(), 1)
-        return pty
+        return pty, num_correct
 
 
     def mask(self, k, vec):
@@ -488,24 +490,28 @@ class Loss(nn.Module):
                 range_ = range_.cuda()
             E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
             log_value('Expected Length', E_pi.data[0], step)
-        loss = 0. 
-        loss_report = 0. 
+        loss = 0.
+        loss_report = 0.
         rs = []
         pty_ = 0.
         qfz_ = 0.
         ptz_ = 0.
+        num_correct = 0.0
+        kls = []
         for i in range(self.sample):
             k_i = k[i]
             for j in range(self.reinforce):
                 ### Compute log p_theta(y|z_ij):
-                pty = self.p_theta_y(outputs[i][j], targets)
+                pty, corr_ = self.p_theta_y(outputs[i][j], targets)
                 pty_ += pty.mean()
+                num_correct += corr_
                 ### Compute log p_theta(z_ij)
                 ptz = self.p_theta_z(z[i][j], k_i)
                 ptz_ += ptz.mean()
                 ### Compute log q_phi(z_ij | x)
                 qfz = self.q_phi(mu[i][j], sigma[i][j], k_i, z[i][j])
                 qfz_ += qfz.mean()
+                kls.append(qfz - ptz)
                 if not j:
                     r_i = (pty - kl_weight*(qfz - ptz))
                 else:
@@ -513,6 +519,9 @@ class Loss(nn.Module):
             loss -= r_i.mean()
             loss_report -= r_i.sum().clone().detach()
             rs.append(r_i)
+        kls = torch.stack(kls)
+        klvar = torch.var(torch.stack(kls), 0).mean()
+        log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
         ### TODO: If self.reinforce > 1, Need to normalize (?)
         ### OR: Remove self.reinforce
         r_sum = torch.stack(rs).clone().detach()
@@ -551,4 +560,4 @@ class Loss(nn.Module):
         log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
         log_value('loss_report', loss_report.data[0], step)
-        return loss, loss_bl, loss_report.data[0]
+        return loss, loss_bl, loss_report.data[0], num_correct

@@ -149,7 +149,6 @@ def eval(model, criterion, data, epoch):
     criterion.train()
     return total_loss / total_words
 
-
 def trainModel(model, trainData, validData, dataset, optim):
     print(model)
     model.train()
@@ -171,7 +170,7 @@ def trainModel(model, trainData, validData, dataset, optim):
         #shuffle mini batch order
         batchOrder = torch.randperm(len(trainData))
         total_loss, report_loss = 0, 0
-        total_words, report_words = 0, 0
+        total_words, report_words, num_correct = 0, 0, 0
         report_src_words = 0
         start = time.time()
         N = len(trainData)
@@ -187,10 +186,11 @@ def trainModel(model, trainData, validData, dataset, optim):
             model.zero_grad()
             baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
+            loss, loss_bl, loss_report, correct = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
             loss.backward()
             loss_bl.backward()
             # update the parameters
+            num_correct += correct
             grad_norm = optim.step()
             report_loss += loss_report
             total_loss += loss_report
@@ -199,8 +199,8 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
-                print("Epoch %2d, %5d/%5d batches; kl weight %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
-                      (epoch, i, len(trainData), kl_weight,
+                print("Epoch %2d, %5d/%5d batches; acc %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
+                      (epoch, i, len(trainData), (num_correct/report_words),
                       math.exp(min(100, report_loss / report_words)),
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
