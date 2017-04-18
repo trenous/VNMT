@@ -504,7 +504,7 @@ class Loss(nn.Module):
                 ### Compute log p_theta(y|z_ij):
                 pty, corr_ = self.p_theta_y(outputs[i][j], targets)
                 pty_ += pty.mean()
-                num_correct += corr_
+                num_correct += corr_ * (1.0 / (self.sample * self.reinforce))
                 ### Compute log p_theta(z_ij)
                 ptz = self.p_theta_z(z[i][j], k_i)
                 ptz_ += ptz.mean()
