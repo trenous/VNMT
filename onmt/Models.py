@@ -458,6 +458,10 @@ class Loss(nn.Module):
         scores = self.generator(output)
         pred = scores.max(1)[1]
         num_correct = pred.data.eq(targets.data).masked_select(targets.ne(onmt.Constants.PAD).data).sum()
+        if num_correct < 0:
+            print 'error, numcorrect > 0: ', num_correct
+            print 'pred: ', pred
+            return None
         pred = scores.view(targets.size(0), targets.size(1), scores.size(1))
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)

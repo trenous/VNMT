@@ -205,7 +205,7 @@ def trainModel(model, trainData, validData, dataset, optim):
                       report_src_words/(time.time()-start),
                       time.time()-start_time))
 
-                report_loss = report_words = report_src_words = 0
+                report_loss = report_words = report_src_words = num_correct = 0
                 start = time.time()
             ### Logging
             log_value('baseline', base_line.mean().data[0], step)
