@@ -213,7 +213,7 @@ class DecoderLatent(nn.Module):
 
 
 
-    def forward(self, hidden, context, z_0):
+    def forward(self, hidden, context, z_0, K):
         '''
         Samples a latent vector z from q(z|x,k)
         hidden: batch x num_layers x h_size
@@ -222,6 +222,7 @@ class DecoderLatent(nn.Module):
         k: batch x 1
         '''
         h_0, c_0 = hidden
+        k_max = int(torch.max(K.data)) #Longest Word in Batch to Sample
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
         attn = self.attn(c_0[-1], context.t())
@@ -229,10 +230,16 @@ class DecoderLatent(nn.Module):
         mu = []
         sigma = []
         z_i = z_0
-
-        for i in xrange(10):
+        for i in xrange(k_max):
             z_i = torch.cat((z_i, attn), 1)
             output, (h_1, c_1) = self.rnn(z_i, hidden)
+            mask = i * Variable(torch.ones(batch_size, 1),
+                            requires_grad=False)
+            if self.cuda:
+                mask = mask.cuda()
+            mask = mask.ge(K.float()).unsqueeze(0).expand_as(h_1).float()
+            h_1 = mask * hidden[0] + (1-mask) * h_1
+            c_1 = mask * hidden[1] + (1-mask) * c_1
             hidden = (h_1, c_1)
             z_i, mu_i, sigma_i = self.generator(output)
             z += [z_i]
@@ -243,6 +250,16 @@ class DecoderLatent(nn.Module):
         z = torch.stack(z)
         mu = torch.stack(mu)
         sigma = torch.stack(sigma)
+        # mask samples to length k
+        mask = Variable(torch.range(0, float(k_max)-1), requires_grad=False)
+        if self.cuda:
+            mask = mask.cuda()
+        mask = mask.unsqueeze(1).expand(mask.size(0), batch_size)
+        mask = mask.ge(K.float().t().expand_as(mask))
+        mask = mask.unsqueeze(2)
+        z.masked_fill_(mask.expand_as(z), 0)
+        mu.masked_fill_(mask.expand_as(mu), 0)
+        sigma.masked_fill_(mask.expand_as(sigma), 0)
         return z.transpose(0, 1), mu.transpose(0,1), sigma.transpose(0,1), hidden
 
 class NMTModel(nn.Module):
@@ -284,6 +301,7 @@ class NMTModel(nn.Module):
 
     def forward(self, input):
         src = input[0]
+        K = src.ne(onmt.Constants.PAD).sum(1)
         tgt = input[1][:, :-1]  # exclude last target from inputs
         ### Source Encoding
         enc_hidden, context = self.encoder(src)
@@ -293,7 +311,7 @@ class NMTModel(nn.Module):
         ### Sample  from sequence given length
         z_0 = self.make_init_decoder_output(context, self.decoder_l)
         z, mu, sigma, hidden_l = self.decoder_l(enc_hidden,
-                                                context, z_0)
+                                                context, z_0, K)
         ### Latent Encoding
         enc_hidden, context = self.encoder_l(z)
         ### Target Decoding
