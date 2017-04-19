@@ -564,4 +564,5 @@ class Loss(nn.Module):
         log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
         log_value('loss_report', loss_report.data[0], step)
+        log_value('kl_weight', kl_weight, step)
         return loss, loss_bl, loss_report.data[0], num_correct
