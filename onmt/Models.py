@@ -505,7 +505,7 @@ class Loss(nn.Module):
             k_i = k[i]
             for j in range(self.reinforce):
                 ### Compute log p_theta(y|z_ij):
-                klz = 0.5* ((mu[i][j]**2) + torch.exp(2*sigma[i][j]) + 1)* (torch.exp(-2*sigma[i][j]) + 1)
+                klz = 0.5*(torch.exp(2*sigma[i][j]) + mu[i][j]**2) -sigma[i][j]
                 klz = klz.view(klz.size(0), klz.size(1) * klz.size(2))
                 klz =  torch.sum(klz, 1)
                 pty, corr_ = self.p_theta_y(outputs[i][j], targets)

@@ -176,7 +176,10 @@ def trainModel(model, trainData, validData, dataset, optim):
         N = len(trainData)
         for i in range(N):
             j = float(i)
-            kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
+            if False:
+                kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
+            else:
+                kl_weight = 1.0
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
