@@ -498,28 +498,25 @@ class Loss(nn.Module):
         loss_report = 0.
         rs = []
         pty_ = 0.
-        qfz_ = 0.
-        ptz_ = 0.
+        klz_ = 0.
         num_correct = 0.0
         kls = []
         for i in range(self.sample):
             k_i = k[i]
             for j in range(self.reinforce):
                 ### Compute log p_theta(y|z_ij):
+                klz = 0.5* ((mu[i][j]**2) + torch.exp(2*sigma[i][j]) + 1)* (torch.exp(-2*sigma[i][j]) + 1)
+                klz = klz.view(klz.size(0), klz.size(1) * klz.size(2))
+                klz =  torch.sum(klz, 1)
                 pty, corr_ = self.p_theta_y(outputs[i][j], targets)
                 pty_ += pty.mean()
                 num_correct += corr_ * (1.0 / (self.sample * self.reinforce))
                 ### Compute log p_theta(z_ij)
-                ptz = self.p_theta_z(z[i][j], k_i)
-                ptz_ += ptz.mean()
-                ### Compute log q_phi(z_ij | x)
-                qfz = self.q_phi(mu[i][j], sigma[i][j], k_i, z[i][j])
-                qfz_ += qfz.mean()
-                kls.append(qfz - ptz)
+                kls.append(klz.mean())
                 if not j:
-                    r_i = (pty - kl_weight*(qfz - ptz))
+                    r_i = (pty - kl_weight*(klz))
                 else:
-                    r_i += (pty - kl_weight*(qfz - ptz))
+                    r_i += (pty - kl_weight*klz)
             loss -= r_i.mean()
             loss_report -= r_i.sum().clone().detach()
             rs.append(r_i)
@@ -553,11 +550,9 @@ class Loss(nn.Module):
         loss_report = loss_report.div(self.sample)
         loss += kl_weight * kld_len.div(batch_size)
         loss_report += kld_len
-        log_value('KLD', (kld_len.div(batch_size) + (qfz_ - ptz_).div(self.sample)).data[0], step)
+        log_value('KLD', (kld_len.div(batch_size) + torch.stack(kls).mean()).data[0], step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
-        log_value('p_z', ptz_.div(self.sample).data[0], step)
-        log_value('q_z_given_x', qfz_.div(self.sample).data[0], step)
         log_value('r_mean_step', r_mean.data[0], step)
         log_value('r_moving_avg', self.r_mean, step)
         log_value('loss', loss.data[0], step)
