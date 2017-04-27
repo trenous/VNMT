@@ -58,13 +58,15 @@ class EncoderLatent(nn.Module):
                         dropout=opt.dropout,
                         bidirectional=opt.brnn)
 
-    def forward(self, input, hidden=None):
+    def forward(self, input, hidden=None, mask=None):
         batch_size = input.size(0) # batch first for multi-gpu compatibility
         if hidden is None:
             h_size = (self.layers * self.num_directions, batch_size, self.hidden_size)
             h_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
             c_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
             hidden = (h_0, c_0)
+        
+# FIXME: packed sequence
         outputs, hidden_t = self.rnn(input.transpose(0,1), hidden)
         return hidden_t, outputs
 
@@ -122,7 +124,7 @@ class Decoder(nn.Module):
             self.word_lut.weight.copy_(pretrained)
 
 
-    def forward(self, input, hidden, context, init_output):
+    def forward(self, input, hidden, context, init_output, mask=None):
         emb = self.word_lut(input).transpose(0, 1)
 
         batch_size = input.size(0)
@@ -135,6 +137,7 @@ class Decoder(nn.Module):
         # self.input_feed=False
         outputs = []
         output = init_output
+        self.attn.apply_mask(mask)
         for i, emb_t in enumerate(emb.chunk(emb.size(0), dim=0)):
             emb_t = emb_t.squeeze(0)
             if self.input_feed:
@@ -285,9 +288,11 @@ class DecoderLatent(nn.Module):
         mask = mask.unsqueeze(2)
         z.masked_fill_(mask.expand_as(z), 0)
         mu.masked_fill_(mask.expand_as(mu), 0)
-        sigma.masked_fill_(mask.expand_as(sigma), 0)
+        sigma.masked_fill_(mask.expand_as(sigma), 1)
 
-        return z.transpose(0, 1), mu.transpose(0,1), sigma.transpose(0,1), hidden
+        return z.transpose(0, 1), mu.transpose(0,1), \
+               sigma.transpose(0,1), hidden, \
+               (1-mask).transpose(0, 1)
 
 class NMTModel(nn.Module):
 
@@ -328,7 +333,7 @@ class NMTModel(nn.Module):
                     .view(h.size(0) // 2, h.size(1), h.size(2) * 2)
         else:
             return h
-
+h
     def forward(self, input):
         src = input[0]
         tgt = input[1][:, :-1]  # exclude last target from inputs
@@ -345,6 +350,7 @@ class NMTModel(nn.Module):
         sigma = []
         out = []
         z = []
+        mask = []
         ## Sample i times from length dist
         for i in range(self.sample):
             mu += [[]]
@@ -355,13 +361,14 @@ class NMTModel(nn.Module):
             k_max = int(torch.max(k_i.data))
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
+            mask += [[]]
             ### Sample j times from sequence given length
             for j in range(self.sample_reinforce):
                 z_0 = self.make_init_decoder_output(context, self.decoder_l)
-                z_ij, mu_ij, sigma_ij, hidden_l = self.decoder_l(enc_hidden,
+                z_ij, mu_ij, sigma_ij, hidden_l, mask_l = self.decoder_l(enc_hidden,
                                                            context, z_0, k_i)
                 ### Latent Encoding
-                enc_hidden, context = self.encoder_l(z_ij)
+                enc_hidden, context = self.encoder_l(z_ij, mask=mask_l)
                 ### Target Decoding
                 init_output = self.make_init_decoder_output(context,
                                                             self.decoder)
@@ -370,15 +377,16 @@ class NMTModel(nn.Module):
                 out_ij, dec_hidden, _attn = self.decoder(tgt,
                                                       enc_hidden,
                                                       context,
-                                                      init_output)
+                                                         init_output, mask_l)
                 mu[i] += [mu_ij]
                 sigma[i] += [sigma_ij]
                 z[i] += [z_ij]
                 out[i] += [out_ij]
+                mask[i] += [mask_l]
                 if self.generate:
                     out = self.generator(out)
 
-        return out, mu, sigma, pi, k, z, context_
+        return out, mu, sigma, pi, k, z, context_, mask
 
 class BaseLine(nn.Module):
     '''Input-dependent baseline for REINFORCE.
@@ -485,7 +493,7 @@ class Loss(nn.Module):
         return vec
 
 
-    def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
+    def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None, mask=None):
         batch_size = pi.size(0)
         ### Track Expexted Value of Length
         if self.training:
@@ -498,16 +506,19 @@ class Loss(nn.Module):
         loss_report = 0.
         rs = []
         pty_ = 0.
-        klz_ = 0.
+        kld = 0.
         num_correct = 0.0
         kls = []
         for i in range(self.sample):
             k_i = k[i]
             for j in range(self.reinforce):
                 ### Compute log p_theta(y|z_ij):
-                klz = 0.5*(torch.exp(2*sigma[i][j]) + mu[i][j]**2) -sigma[i][j]
-                klz = klz.view(klz.size(0), klz.size(1) * klz.size(2))
-                klz =  torch.sum(klz, 1)
+                klz_ = 0.5*(torch.exp(2*sigma[i][j]) + mu[i][j]**2) - sigma[i][j]
+                klz_ -= 0.5
+                klz_ = klz_ * mask[i][j].expand_as(klz_)
+                klz_ = klz_.view(klz_.size(0), klz_.size(1) * klz_.size(2))
+                klz  =  torch.sum(klz_, 1)
+                kld += torch.sum(klz_, 1).mean().div(self.sample).data[0]
                 pty, corr_ = self.p_theta_y(outputs[i][j], targets)
                 pty_ += pty.mean()
                 num_correct += corr_ * (1.0 / (self.sample * self.reinforce))
@@ -520,9 +531,11 @@ class Loss(nn.Module):
             loss -= r_i.mean()
             loss_report -= r_i.sum().clone().detach()
             rs.append(r_i)
-        kls = torch.stack(kls)
-        klvar = torch.var(torch.stack(kls), 0).mean()
-        log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
+        kls = torch.mean(torch.stack(kls), 0)
+        sg = torch.exp(sigma[0][0]).mean()
+        if self.sample > 1:
+            klvar = torch.var(torch.stack(kls), 0).mean()
+            log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
         ### TODO: If self.reinforce > 1, Need to normalize (?)
         ### OR: Remove self.reinforce
         r_sum = torch.stack(rs).clone().detach()
@@ -536,7 +549,7 @@ class Loss(nn.Module):
             self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.data[0]
         else:
             self.r_mean = r_mean.data[0]
-        loss_bl = torch.pow(r_sum.div(self.sample) -baseline - self.r_mean, 2).mean()
+        loss_bl = torch.pow(r_sum.div(self.sample) - baseline - self.r_mean, 2).mean()
         bl = Variable(baseline.data, requires_grad=False)
         for i in range(self.sample):
             k_i = k[i]
@@ -551,6 +564,7 @@ class Loss(nn.Module):
         loss += kl_weight * kld_len.div(batch_size)
         loss_report += kld_len
         log_value('KLD', (kld_len.div(batch_size) + torch.stack(kls).mean()).data[0], step)
+        log_value('KLZ', kld, step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
         log_value('r_mean_step', r_mean.data[0], step)
@@ -558,6 +572,6 @@ class Loss(nn.Module):
         log_value('loss', loss.data[0], step)
         log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo.data[0], step)
-        log_value('loss_report', loss_report.data[0], step)
         log_value('kl_weight', kl_weight, step)
+        log_value('mean_sigma', sg.data[0], step)
         return loss, loss_bl, loss_report.data[0], num_correct
