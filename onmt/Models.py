@@ -333,7 +333,7 @@ class NMTModel(nn.Module):
                     .view(h.size(0) // 2, h.size(1), h.size(2) * 2)
         else:
             return h
-h
+
     def forward(self, input):
         src = input[0]
         tgt = input[1][:, :-1]  # exclude last target from inputs
