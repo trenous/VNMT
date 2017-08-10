@@ -4,7 +4,6 @@ from torch.autograd import Variable
 import onmt.modules
 import math
 import numpy
-import ipdb
 from tensorboard_logger import log_value
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
