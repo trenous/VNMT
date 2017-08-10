@@ -20,7 +20,7 @@ def make_mask(k):
     if k.is_cuda:
         mask = mask.cuda()
     mask = mask.unsqueeze(0).expand(batch_size, mask.size(0))
-    return mask.gt(k.data.expand_as(mask))
+    return mask.ge(k.data.expand_as(mask))
 
 def mask_tensor(k, vec, fill):
     ''' Masks Entries in vec that are longer than specified by k.
@@ -96,11 +96,11 @@ class EncoderLatent(nn.Module):
         # FIXME: packed sequence
         # Reorder inputs by Length
         k_sorted, indices = torch.sort(k.squeeze(), descending=True)
-        lengths = (k_sorted + 1).data.tolist()
+        lengths = k_sorted.data.tolist()
         input_sorted = torch.index_select(input, 0, indices).transpose(0,1)
         input_packed = pack(input_sorted, lengths)
         outputs_packed, hidden_t = self.rnn(input_packed, hidden)
-        outputs_sorted, lengths_back = unpack(outputs_packed)
+        outputs_sorted, _ = unpack(outputs_packed)
         # Restore original order
         _, indices_reverse = torch.sort(indices, descending=False)
         outputs = torch.index_select(outputs_sorted, 1, indices_reverse)
@@ -285,7 +285,7 @@ class DecoderLatent(nn.Module):
         k: batch x 1
         '''
         h_0, c_0 = hidden
-        k_max = int(torch.max(k.data)) #Longest Word in Batch to Sample
+        k_max = int(torch.max(k.data))  #Longest Word in Batch to Sample
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
         self.attn.applyMask(mask_in.data)
@@ -294,7 +294,6 @@ class DecoderLatent(nn.Module):
         mu = []
         sigma = []
         z_i = z_0
-
         for i in xrange(k_max):
             z_i = torch.cat([z_i, k], 1) # Append Length To Input
             z_i = torch.cat((z_i, attn), 1)
@@ -304,7 +303,7 @@ class DecoderLatent(nn.Module):
                             requires_grad=False)
             if self.cuda:
                 mask = mask.cuda()
-            mask = mask.gt(k).unsqueeze(0).expand_as(h_1).float()
+            mask = mask.ge(k).unsqueeze(0).expand_as(h_1).float()
             h_1 = mask * hidden[0] + (1-mask) * h_1
             c_1 = mask * hidden[1] + (1-mask) * c_1
             hidden = (h_1, c_1)
@@ -386,7 +385,8 @@ class NMTModel(nn.Module):
             sigma += [[]]
             out += [[]]
             z += [[]]
-            k_i = pi.multinomial().float()
+            # Sample in [1, max_len]
+            k_i = pi.multinomial().float() + 1.0
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
             ### Sample j times from sequence given length
@@ -534,10 +534,10 @@ class Loss(nn.Module):
         loss_bl = torch.pow(r_sum.div(self.sample) - baseline - self.r_mean, 2).mean()
         bl = Variable(baseline.data, requires_grad=False)
         for i in range(self.sample):
-            k_i = k[i]
+            indices = k[i] - 1
             # Copy Prevents Backprop Through Rewards
             r = Variable(rs[i].data, requires_grad=False)
-            RE_grad = torch.log(torch.gather(pi, 1, k_i.long()))
+            RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
             reward_adjusted = r - self.r_mean - bl
             reinforcement = self.lam * reward_adjusted * RE_grad
             loss -= reinforcement.mean()
