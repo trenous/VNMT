@@ -111,6 +111,8 @@ parser.add_argument('-logdir', default='run',
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
                     help="Use CUDA")
+parser.add_argument('-kl_weights', default=[], nargs='+', type=float,
+                    help="Use CUDA")
 
 parser.add_argument('-log_interval', type=int, default=50,
                     help="Print stats at this interval.")
@@ -125,6 +127,7 @@ print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with -cuda")
+
 
 if opt.cuda:
     cuda.set_device(opt.gpus[0])
@@ -175,8 +178,11 @@ def trainModel(model, trainData, validData, dataset, optim):
         start = time.time()
         N = len(trainData)
         for i in range(N):
+
             j = float(i)
             kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
+
+
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
