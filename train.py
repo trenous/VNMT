@@ -7,6 +7,7 @@ from torch import cuda
 from torch.autograd import Variable
 import math
 import time
+import ipdb
 from tensorboard_logger import configure, log_value
 
 
@@ -111,6 +112,8 @@ parser.add_argument('-logdir', default='run',
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
                     help="Use CUDA")
+parser.add_argument('-kl_weights', default=[], nargs='+', type=float,
+                    help="Use CUDA")
 
 parser.add_argument('-log_interval', type=int, default=50,
                     help="Print stats at this interval.")
@@ -120,8 +123,9 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
-opt.kl_weights = [1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-9,1e-8,1e-7,1e-6,1e-5,1e-4,1e-3,1e-2,1e-1,1]
-print(opt)
+if not opt.kl_weights:
+    opt.kl_weights = [1e-5,1e-4,1e-4,1e-3,1e-2,1e-1]
+    print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with -cuda")
@@ -140,7 +144,7 @@ def eval(model, criterion, data, epoch):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
         outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        _, elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
+        _, elbo_, loss_report, kl = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
         elbo += elbo_
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
@@ -170,13 +174,16 @@ def trainModel(model, trainData, validData, dataset, optim):
         #shuffle mini batch order
         batchOrder = torch.randperm(len(trainData))
         total_loss, report_loss = 0, 0
-        total_words, report_words, num_correct = 0, 0, 0
+        total_words, report_words, num_correct = 0, 0, 0,
         report_src_words = 0
         start = time.time()
         N = len(trainData)
         for i in range(N):
             j = float(i)
-            kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
+            if opt.kl_w:
+                kl_weight = (1-j/N) * opt.kl_w + (j/N)*opt.kl_w_next
+            else:
+                kl_weight = 1.0
             batchIdx = batchOrder[i] if epoch >= opt.curriculum else i
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
