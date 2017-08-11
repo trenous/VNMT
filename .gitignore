@@ -9,3 +9,4 @@ runs
 slurm*
 *#
 #*
+*.out
