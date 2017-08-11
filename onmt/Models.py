@@ -25,8 +25,7 @@ def mask_tensor(k, vec, fill):
     ''' Masks Entries in vec that are longer than specified by k.
         vec: batch_size x seq_length x ...
         k: batch_size x 1
-        '''
-
+    '''
     mask = make_mask(k)
     for i in range(2, vec.dim()):
         mask = mask.unsqueeze(i)
@@ -60,7 +59,8 @@ class Encoder(nn.Module):
         batch_size = input.size(0) # batch first for multi-gpu compatibility
         emb = self.word_lut(input).transpose(0, 1)
         if hidden is None:
-            h_size = (self.layers * self.num_directions, batch_size, self.hidden_size)
+            h_size = (self.layers * self.num_directions, batch_size,
+                      self.hidden_size)
             h_0 = Variable(emb.data.new(*h_size).zero_(), requires_grad=False)
             c_0 = Variable(emb.data.new(*h_size).zero_(), requires_grad=False)
             hidden = (h_0, c_0)
@@ -366,13 +366,11 @@ class NMTModel(nn.Module):
         mask_in = src.eq(onmt.Constants.PAD)
         tgt = input[1][:, :-1]  # exclude last target from inputs
         ### Source Encoding
-        enc_hidden, context = self.encoder(src)
-        ### Should Detach Contexts for Baseline???
-        context_ = context.clone().detach()
+        enc_hidden, enc_context = self.encoder(src)
         enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
                       self._fix_enc_hidden(enc_hidden[1]))
         ### Length
-        pi = self.lengthnet(context.t(), mask_in)
+        pi = self.lengthnet(enc_context.t(), mask_in)
         k = []
         mu = []
         sigma = []
@@ -380,37 +378,30 @@ class NMTModel(nn.Module):
         z = []
         ## Sample i times from length dist
         for i in range(self.sample):
-            mu += [[]]
-            sigma += [[]]
-            out += [[]]
-            z += [[]]
             # Sample in [1, max_len]
             k_i = pi.multinomial().float() + 1.0
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
-            ### Sample j times from sequence given length
-            for j in range(self.sample_reinforce):
-                z_0 = self.make_init_decoder_output(context, self.decoder_l)
-                z_ij, mu_ij, sigma_ij, hidden_l = self.decoder_l(enc_hidden,
-                                                                 context, z_0, k_i, mask_in)
-                ### Latent Encoding
-                enc_hidden, context = self.encoder_l(z_ij, k_i)
-                ### Target Decoding
-                init_output = self.make_init_decoder_output(context,
-                                                            self.decoder)
-                enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
-                              self._fix_enc_hidden(enc_hidden[1]))
-                out_ij, dec_hidden, _attn = self.decoder(tgt,
-                                                         enc_hidden,
-                                                         context, k_i,
-                                                         init_output)
-                mu[i] += [mu_ij]
-                sigma[i] += [sigma_ij]
-                z[i] += [z_ij]
-                out[i] += [out_ij]
-                if self.generate:
-                    out = self.generator(out)
-        return out, mu, sigma, pi, k, z, context_
+            z_0 = self.make_init_decoder_output(enc_context, self.decoder_l)
+            z_i, mu_i, sigma_i, dec_hidden_l = self.decoder_l(enc_hidden,
+                                                              enc_context,
+                                                              z_0, k_i, mask_in)
+            ### Latent Encoding
+            enc_hidden_l, context_l = self.encoder_l(z_i, k_i)
+            ### Target Decoding
+            init_output = self.make_init_decoder_output(context_l,
+                                                        self.decoder)
+            enc_hidden_l = (self._fix_enc_hidden(enc_hidden_l[0]),
+                            self._fix_enc_hidden(enc_hidden_l[1]))
+            out_i, dec_hidden, _attn = self.decoder(tgt, enc_hidden_l,
+                                                    context_l, k_i,
+                                                    init_output)
+            mu += [mu_i]
+            sigma += [sigma_i]
+            z += [z_i]
+            out += [out_i]
+
+        return out, mu, sigma, pi, k, z, enc_context.clone().detach()
 
 class BaseLine(nn.Module):
     '''Input-dependent baseline for REINFORCE.
@@ -431,19 +422,18 @@ class Loss(nn.Module):
 
     def __init__(self, opt, generator, vocabSize):
         super(Loss, self).__init__()
-        self.generator = generator
+        self.gamma = opt.gamma
+        self.max_len = opt.max_len_latent
+        self.gpu = opt.cuda
         self.lam = opt.lam
         self.sample = opt.sample
-        self.reinforce = opt.sample_reinforce
+        self.generator = generator
         ### NMTCriterion
         weight = torch.ones(vocabSize)
         weight[onmt.Constants.PAD] = 0
         crit = nn.NLLLoss(weight, size_average=False)
-        self.gpu = opt.cuda
         self.crit = crit
         ### Latent Length Dist
-        self.gamma = opt.gamma
-        self.max_len = opt.max_len_latent
         self.prior_len = torch.ones(self.max_len)
         for i in range(self.max_len):
             self.prior_len[i:] *= self.gamma
@@ -453,7 +443,7 @@ class Loss(nn.Module):
         if self.gpu:
             self.prior_len = self.prior_len.cuda()
             self.crit = self.crit.cuda()
-        self.r_mean = 0
+        self.r_mean = 0.0
 
     def kld_length(self, pi):
         ''' Returns the KL Divergence of the approximate posterior
@@ -472,87 +462,81 @@ class Loss(nn.Module):
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
         pty = torch.sum(gathered.squeeze(), 1)
-        return pty, num_correct
+        return pty, float(num_correct)
 
     def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         batch_size = pi.size(0)
-        ### Track Expexted Value of Length
-        if self.training:
-            range_ = Variable(torch.arange(1, self.max_len + 1)).unsqueeze(0)
-            if self.gpu:
-                range_ = range_.cuda()
-            E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
-            log_value('Expected Length', E_pi.data[0], step)
-        loss = 0.
-        loss_report = 0.
-        rs = []
-        pty_ = 0.
-        kld = 0.
+        kld_len = self.kld_length(pi)
+        loss = kl_weight * kld_len.div(batch_size)
+        loss_report = kld_len
+        pty = 0.0
+        kld = 0.0
         num_correct = 0.0
         kls = []
+        rs = []
+        ### Loss
         for i in range(self.sample):
             k_i = k[i]
-            for j in range(self.reinforce):
-                ### Compute log p_theta(y|z_ij):
-                klz_ = 0.5*(torch.exp(2*sigma[i][j]) + mu[i][j]**2) - sigma[i][j]
-                klz_ -= 0.5
-                klz_ = mask_tensor(k_i, klz_, 0)
-                klz_ = klz_.view(klz_.size(0), klz_.size(1) * klz_.size(2))
-                klz  =  torch.sum(klz_, 1)
-                kld += klz.mean().div(self.sample).data[0]
-                pty, corr_ = self.p_theta_y(outputs[i][j], targets)
-                pty_ += pty.mean()
-                num_correct += corr_ * (1.0 / (self.sample * self.reinforce))
-                ### Compute log p_theta(z_ij)
-                kls.append(klz.mean())
-                if not j:
-                    r_i = (pty - kl_weight*(klz))
-                else:
-                    r_i += (pty - kl_weight*klz)
-            loss -= r_i.mean()
-            loss_report -= r_i.sum().clone().detach()
+            ### Compute KLD of Latent Sequence
+            kld_ = 0.5*(torch.exp(2*sigma[i]) + mu[i]**2) - sigma[i] - 0.5
+            kld_ = mask_tensor(k_i, kld_, 0)
+            kld_ = kld_.view(kld_.size(0), kld_.size(1) * kld_.size(2))
+            kld_  =  torch.sum(kld_, 1)
+            kld += kld_.mean().div(self.sample).data[0]
+            pty_, corr_ = self.p_theta_y(outputs[i], targets)
+            pty += pty_.mean().div(self.sample)
+            num_correct += corr_  / self.sample
+            r_i = (pty_ - kl_weight*kld_)
+            loss -= r_i.mean().div(self.sample)
+            loss_report -= r_i.sum().clone().detach().div(self.sample)
             rs.append(r_i)
-        kls = torch.mean(torch.stack(kls), 0)
-        sg = torch.exp(sigma[0][0]).mean()
-        if self.sample > 1:
-            klvar = torch.var(torch.stack(kls), 0).mean()
-            log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
-        ### TODO: If self.reinforce > 1, Need to normalize (?)
-        ### OR: Remove self.reinforce
-        r_sum = torch.stack(rs).clone().detach()
-	r_mean = torch.mean(r_sum)
-        r_sum = torch.sum(r_sum, 0).squeeze(0)
-        kld_len = self.kld_length(pi)
-        elbo = -loss.clone().detach().div(self.sample) - kld_len.div(batch_size)
+            kls.append(kld_)
+
+        elbo = -loss.clone().detach().data[0]
+        ### Return if in Eval Mode
         if not self.training:
-            return None, elbo.data[0], (loss_report.div(self.sample) + kld_len).data[0]
-        if self.r_mean:
-            self.r_mean = 0.9*self.r_mean + 0.1 * r_mean.data[0]
-        else:
-            self.r_mean = r_mean.data[0]
-        loss_bl = torch.pow(r_sum.div(self.sample) - baseline - self.r_mean, 2).mean()
-        bl = Variable(baseline.data, requires_grad=False)
+            return elbo, loss_report.data[0]
+
+        ### Reinforcements
+        bl = baseline.clone().detach()
         for i in range(self.sample):
             indices = k[i] - 1
             # Copy Prevents Backprop Through Rewards
-            r = Variable(rs[i].data, requires_grad=False)
+            r = rs[i].clone().detach()
             RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
             reward_adjusted = r - self.r_mean - bl
             reinforcement = self.lam * reward_adjusted * RE_grad
-            loss -= reinforcement.mean()
-        loss = loss.div(self.sample)
-        loss_report = loss_report.div(self.sample)
-        loss += kl_weight * kld_len.div(batch_size)
-        loss_report += kld_len
-        log_value('KLD', (kld_len.div(batch_size) + torch.stack(kls).mean()).data[0], step)
-        log_value('KLZ', kld, step)
+            loss -= reinforcement.mean().div(self.sample)
+
+        ### Baseline Loss
+        r_avg = torch.stack(kls).mean(0).clone().detach()
+        loss_bl = torch.pow(r_avg - baseline - self.r_mean, 2).mean()
+
+        ### Update Running Average of Rewards
+        if self.r_mean:
+            self.r_mean = 0.95*self.r_mean + 0.05 * r_avg.mean().data[0]
+        else:
+            self.r_mean = r_avg.mean().data[0]
+
+        ### Logging
+        if self.sample > 1:
+            klvar = torch.var(torch.stack(kls))
+            log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
+        range_ = Variable(torch.arange(1, self.max_len + 1)).unsqueeze(0)
+        if self.gpu:
+            range_ = range_.cuda()
+        E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
+        mean_sig = [sig.mean(1) for sig in sigma]
+        mean_sig = torch.exp(torch.stack(mean_sig)).mean()
+        log_value('Expected Length', E_pi.data[0], step)
+        log_value('KLD', kld , step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
-        log_value('p_y_given_z', pty_.div(self.sample).data[0], step)
-        log_value('r_mean_step', r_mean.data[0], step)
+        log_value('p_y_given_z', pty.data[0], step)
+        log_value('r_mean_step', r_avg.mean().data[0], step)
         log_value('r_moving_avg', self.r_mean, step)
-        log_value('loss', loss.data[0], step)
         log_value('loss BL', loss_bl.data[0], step)
-        log_value('ELBO', elbo.data[0], step)
+        log_value('ELBO', elbo, step)
         log_value('kl_weight', kl_weight, step)
-        log_value('mean_sigma', sg.data[0], step)
+        log_value('mean_sigma', mean_sig.data[0], step)
+
         return loss, loss_bl, loss_report.data[0], num_correct

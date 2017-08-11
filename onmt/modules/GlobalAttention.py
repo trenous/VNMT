@@ -103,8 +103,9 @@ class GlobalAttentionLatent(nn.Module):
         attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
         attn = attn - attn.max(1)[0].expand_as(attn)
 	attn = torch.exp(attn)
+
         if self.mask is not None:
-            attn.data.masked_fill_(self.mask, float(0.))
+            attn.data.masked_fill_(self.mask, float(0))
         attn = attn / attn.sum(1).expand_as(attn)
         attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
 
