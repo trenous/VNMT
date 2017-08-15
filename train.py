@@ -142,7 +142,7 @@ def eval(model, criterion, data, epoch):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
         outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        elbo_, loss_report, kl = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
+        elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
         elbo += elbo_
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
@@ -176,6 +176,7 @@ def trainModel(model, trainData, validData, dataset, optim):
         report_src_words = 0
         start = time.time()
         N = len(trainData)
+        eval_every = 0
         for i in range(N):
             j = float(i)
             if opt.kl_w:
@@ -204,6 +205,12 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
+                eval_every += 1
+                if eval_every % 10 == 0 and eval_every > 0:
+                    valid_loss = eval(model, criterion, validData, epoch)
+                    valid_ppl = math.exp(min(valid_loss, 100))
+                    print('Validation perplexity: %g' % valid_ppl)
+
                 print("Epoch %2d, %5d/%5d batches; acc %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
                       (epoch, i, len(trainData), (num_correct/report_words),
                       math.exp(min(100, report_loss / report_words)),

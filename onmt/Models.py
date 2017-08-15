@@ -180,7 +180,7 @@ class Decoder(nn.Module):
                 emb_t = torch.cat([emb_t, output], 1)
 
             output, hidden = self.rnn(emb_t, hidden)
-            output, attn = self.attn(output, context.t())
+            output, attn = self.attn(output, context.transpose(0,1))
             output = self.dropout(output)
             outputs += [output]
 
@@ -289,7 +289,7 @@ class DecoderLatent(nn.Module):
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
         self.attn.applyMask(mask_in.data)
-        attn = self.attn(c_0[-1], context.t())
+        attn = self.attn(c_0[-1], context.transpose(0,1))
         z = []
         mu = []
         sigma = []
@@ -510,7 +510,7 @@ class Loss(nn.Module):
             loss -= reinforcement.mean().div(self.sample)
 
         ### Baseline Loss
-        r_avg = torch.stack(kls).mean(0).clone().detach()
+        r_avg = torch.stack(rs).mean(0).clone().detach()
         loss_bl = torch.pow(r_avg - baseline - self.r_mean, 2).mean()
 
         ### Update Running Average of Rewards
