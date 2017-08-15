@@ -4,7 +4,7 @@ from torch.autograd import Variable
 import onmt.modules
 import math
 import numpy
-import ipdb
+
 from tensorboard_logger import log_value
 
 
@@ -283,7 +283,7 @@ class DecoderLatent(nn.Module):
         mu = torch.stack(mu)
         sigma = torch.stack(sigma)
         # mask samples to length k
-        mask = Variable(torch.range(0, float(k_max) -1 ), requires_grad=False)
+        mask = Variable(torch.range(0, float(k_max) - 1 ), requires_grad=False)
         if self.cuda:
             mask = mask.cuda()
         mask = mask.unsqueeze(1).expand(mask.size(0), batch_size)
@@ -361,7 +361,7 @@ class NMTModel(nn.Module):
             sigma += [[]]
             out += [[]]
             z += [[]]
-            k_i = pi.multinomial().float()
+            k_i = pi.multinomial().float() + 1.0
             k_max = int(torch.max(k_i.data))
             k_i = Variable(k_i.data, requires_grad=False)
             k += [k_i]
@@ -533,9 +533,9 @@ class Loss(nn.Module):
             rs.append(r_i)
         kls = torch.mean(torch.stack(kls), 0)
         sg = torch.exp(sigma[0][0]).mean()
-        if self.sample > 1:
-            klvar = torch.var(torch.stack(kls), 0).mean()
-            log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
+        #if self.sample > 1:
+        #    klvar = torch.var(torch.stack(kls), 0).mean()
+        #    log_value('STD KL Divergence', torch.sqrt(klvar).data[0], step)
         ### TODO: If self.reinforce > 1, Need to normalize (?)
         ### OR: Remove self.reinforce
         r_sum = torch.stack(rs).clone().detach()
