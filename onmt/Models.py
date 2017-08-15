@@ -4,6 +4,7 @@ from torch.autograd import Variable
 import onmt.modules
 import math
 import numpy
+import ipdb
 from tensorboard_logger import log_value
 
 
@@ -65,7 +66,7 @@ class EncoderLatent(nn.Module):
             h_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
             c_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
             hidden = (h_0, c_0)
-        
+
 # FIXME: packed sequence
         outputs, hidden_t = self.rnn(input.transpose(0,1), hidden)
         return hidden_t, outputs
@@ -137,7 +138,7 @@ class Decoder(nn.Module):
         # self.input_feed=False
         outputs = []
         output = init_output
-        self.attn.apply_mask(mask)
+        self.attn.applyMask(mask.data)
         for i, emb_t in enumerate(emb.chunk(emb.size(0), dim=0)):
             emb_t = emb_t.squeeze(0)
             if self.input_feed:
@@ -184,13 +185,14 @@ class LengthNet(nn.Module):
          self.linear = FeedForward(opt.rnn_size, opt.max_len_latent)
          self.sm = nn.Softmax()
 
-     def forward(self, context):
+     def forward(self, context, mask):
          '''
          in:
             context: batch x sourceL x dim
          out:
              pi:     batch x max_len_latent
          '''
+         self.attention.applyMask(mask)
          attn = self.attention(context)
          scores = self.linear(attn)
          pi = self.sm(scores)
@@ -239,7 +241,7 @@ class DecoderLatent(nn.Module):
 
 
 
-    def forward(self, hidden, context, z_0, k):
+    def forward(self, hidden, context, z_0, k, mask):
         '''
         Samples a latent vector z from q(z|x,k)
         hidden: batch x num_layers x h_size
@@ -251,6 +253,7 @@ class DecoderLatent(nn.Module):
         k_max = int(torch.max(k.data)) #Longest Word in Batch to Sample
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
+        self.attn.applyMask(mask)
         attn = self.attn(c_0[-1], context.t())
         z = []
         mu = []
@@ -280,7 +283,7 @@ class DecoderLatent(nn.Module):
         mu = torch.stack(mu)
         sigma = torch.stack(sigma)
         # mask samples to length k
-        mask = Variable(torch.range(0, float(k_max)-1), requires_grad=False)
+        mask = Variable(torch.range(0, float(k_max) -1 ), requires_grad=False)
         if self.cuda:
             mask = mask.cuda()
         mask = mask.unsqueeze(1).expand(mask.size(0), batch_size)
@@ -292,7 +295,7 @@ class DecoderLatent(nn.Module):
 
         return z.transpose(0, 1), mu.transpose(0,1), \
                sigma.transpose(0,1), hidden, \
-               (1-mask).transpose(0, 1)
+               mask.transpose(0, 1)
 
 class NMTModel(nn.Module):
 
@@ -333,9 +336,10 @@ class NMTModel(nn.Module):
                     .view(h.size(0) // 2, h.size(1), h.size(2) * 2)
         else:
             return h
-h
+
     def forward(self, input):
         src = input[0]
+        mask_in = src.eq(onmt.Constants.PAD)
         tgt = input[1][:, :-1]  # exclude last target from inputs
         ### Source Encoding
         enc_hidden, context = self.encoder(src)
@@ -344,7 +348,7 @@ h
         enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
                       self._fix_enc_hidden(enc_hidden[1]))
         ### Length
-        pi = self.lengthnet(context.t())
+        pi = self.lengthnet(context.t(), mask_in)
         k = []
         mu = []
         sigma = []
@@ -366,17 +370,17 @@ h
             for j in range(self.sample_reinforce):
                 z_0 = self.make_init_decoder_output(context, self.decoder_l)
                 z_ij, mu_ij, sigma_ij, hidden_l, mask_l = self.decoder_l(enc_hidden,
-                                                           context, z_0, k_i)
+                                                                         context, z_0, k_i, mask_in)
                 ### Latent Encoding
-                enc_hidden, context = self.encoder_l(z_ij, mask=mask_l)
+                enc_hidden_l, context_l = self.encoder_l(z_ij, mask=mask_l)
                 ### Target Decoding
-                init_output = self.make_init_decoder_output(context,
+                init_output = self.make_init_decoder_output(context_l,
                                                             self.decoder)
-                enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
-                              self._fix_enc_hidden(enc_hidden[1]))
+                enc_hidden_l = (self._fix_enc_hidden(enc_hidden_l[0]),
+                              self._fix_enc_hidden(enc_hidden_l[1]))
                 out_ij, dec_hidden, _attn = self.decoder(tgt,
-                                                      enc_hidden,
-                                                      context,
+                                                      enc_hidden_l,
+                                                      context_l,
                                                          init_output, mask_l)
                 mu[i] += [mu_ij]
                 sigma[i] += [sigma_ij]
@@ -466,10 +470,6 @@ class Loss(nn.Module):
         scores = self.generator(output)
         pred = scores.max(1)[1]
         num_correct = pred.data.eq(targets.data).masked_select(targets.ne(onmt.Constants.PAD).data).sum()
-        if num_correct < 0:
-            print 'error, numcorrect > 0: ', num_correct
-            print 'pred: ', pred
-            return None
         pred = scores.view(targets.size(0), targets.size(1), scores.size(1))
         gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
         gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
@@ -515,7 +515,7 @@ class Loss(nn.Module):
                 ### Compute log p_theta(y|z_ij):
                 klz_ = 0.5*(torch.exp(2*sigma[i][j]) + mu[i][j]**2) - sigma[i][j]
                 klz_ -= 0.5
-                klz_ = klz_ * mask[i][j].expand_as(klz_)
+                klz_ = klz_.masked_fill_(mask[i][j].expand_as(klz_), 0)
                 klz_ = klz_.view(klz_.size(0), klz_.size(1) * klz_.size(2))
                 klz  =  torch.sum(klz_, 1)
                 kld += torch.sum(klz_, 1).mean().div(self.sample).data[0]

@@ -19,7 +19,7 @@ Constructs a unit mapping.
     The full def is  $$\tanh(W_2 [(softmax((W_1 q + b_1) H) H), q] + b_2)$$.:
 
 """
-
+import ipdb
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
@@ -46,9 +46,11 @@ class GlobalAttention(nn.Module):
 
         # Get attention
         attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
+        attn = attn - attn.max(1)[0].expand_as(attn)
+        attn = torch.exp(attn)
         if self.mask is not None:
-            attn.data.masked_fill_(self.mask, float('-inf'))
-        attn = self.sm(attn)
+            attn.data.masked_fill_(self.mask, float(0))
+        attn = attn / attn.sum(1).expand_as(attn)
         attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
 
         weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
@@ -75,13 +77,16 @@ class GlobalAttentionLatent(nn.Module):
         input: batch x dim
         context: batch x sourceL x dim
         """
+
         targetT = self.linear_in(input).unsqueeze(2)  # batch x dim x 1
 
         # Get attention
         attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
+        attn = attn - attn.max(1)[0].expand_as(attn)
+	attn = torch.exp(attn)
         if self.mask is not None:
-            attn.data.masked_fill_(self.mask, float('-inf'))
-        attn = self.sm(attn)
+            attn.data.masked_fill_(self.mask.data, float(0.))
+        attn = attn / attn.sum(1).expand_as(attn)
         attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
 
         weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
@@ -98,6 +103,10 @@ class ConvexCombination(nn.Module):
         super(ConvexCombination, self).__init__()
         self.sm = nn.Softmax()
         self.linear_in = nn.Linear(dim, 1)
+        self.mask = None
+
+    def applyMask(self, mask):
+        self.mask = mask
 
     def forward(self, context):
         """
@@ -111,7 +120,11 @@ class ConvexCombination(nn.Module):
         scores = self.linear_in(contextv).view(batch, length, 1).squeeze(2)
         # scores.size =  batch x sourceL
         # Compute Convex Combination
-        attn = self.sm(scores)
+        score = scores - scores.max(1)[0].expand_as(scores)
+	attn = torch.exp(scores)
+        if self.mask is not None:
+            attn.data.masked_fill_(self.mask.data, float(0.))
+        attn = attn / attn.sum(1).expand_as(attn)
         attn = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
         weightedContext = torch.bmm(attn, context)  # batch x dim
         return weightedContext.squeeze(1)
