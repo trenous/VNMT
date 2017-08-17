@@ -4,6 +4,7 @@ from torch.autograd import Variable
 import onmt.modules
 import math
 import numpy
+import ipdb
 from tensorboard_logger import log_value
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
@@ -468,12 +469,12 @@ class Loss(nn.Module):
         batch_size = pi.size(0)
         kld_len = self.kld_length(pi)
         loss = kl_weight * kld_len.div(batch_size)
-        loss_report = kld_len
+        loss_report = kl_weight * kld_len
         pty = 0.0
         kld = 0.0
         num_correct = 0.0
-        kls = []
         rs = []
+        kls = []
         ### Loss
         for i in range(self.sample):
             k_i = k[i]
@@ -510,6 +511,7 @@ class Loss(nn.Module):
 
         ### Baseline Loss
         r_avg = torch.stack(rs).mean(0).clone().detach()
+
         loss_bl = torch.pow(r_avg - baseline - self.r_mean, 2).mean()
 
         ### Update Running Average of Rewards
@@ -528,6 +530,7 @@ class Loss(nn.Module):
         E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
         mean_sig = [sig.mean(1) for sig in sigma]
         mean_sig = torch.exp(torch.stack(mean_sig)).mean()
+        log_value('BaseLine', baseline.mean().data[0], step)
         log_value('Expected Length', E_pi.data[0], step)
         log_value('KLD', kld , step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)

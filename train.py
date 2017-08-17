@@ -132,7 +132,7 @@ if torch.cuda.is_available() and not opt.cuda:
 if opt.cuda:
     cuda.set_device(opt.gpus[0])
 
-def eval(model, criterion, data, epoch):
+def eval(model, criterion, data, epoch, kl_weight):
     total_loss = 0
     total_words = 0
     criterion.eval()
@@ -141,7 +141,7 @@ def eval(model, criterion, data, epoch):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
         outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets)
+        elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight=kl_weight)
         elbo += elbo_
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
@@ -232,7 +232,7 @@ def trainModel(model, trainData, validData, dataset, optim):
         print('Train perplexity: %g' % math.exp(min(train_loss, 100)))
 
         ##  (2) evaluate on the validation set
-        valid_loss = eval(model, criterion, validData, epoch)
+        valid_loss = eval(model, criterion, validData, epoch, opt.kl_w_next)
         valid_ppl = math.exp(min(valid_loss, 100))
         print('Validation perplexity: %g' % valid_ppl)
 
