@@ -450,7 +450,7 @@ class Loss(nn.Module):
         ''' Returns the KL Divergence of the approximate posterior
            length distribution given by pi and the prior.
         '''
-        return (pi * torch.log(pi / self.prior_len.expand_as(pi))).sum()
+        return (pi * torch.log(pi / self.prior_len.expand_as(pi))).mean(0).sum()
 
     def p_theta_y(self, output, targets):
         '''Computes Log Likelihood of Targets Given X.
@@ -468,7 +468,7 @@ class Loss(nn.Module):
     def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         batch_size = pi.size(0)
         kld_len = self.kld_length(pi)
-        loss = kl_weight * kld_len.div(batch_size)
+        loss = kl_weight * kld_len
         loss_report = kl_weight * kld_len
         pty = 0.0
         kld = 0.0
@@ -532,6 +532,7 @@ class Loss(nn.Module):
         mean_sig = torch.exp(torch.stack(mean_sig)).mean()
         log_value('BaseLine', baseline.mean().data[0], step)
         log_value('Expected Length', E_pi.data[0], step)
+        log_value('Loss', loss.data[0], step)
         log_value('KLD', kld , step)
         log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
         log_value('p_y_given_z', pty.data[0], step)
