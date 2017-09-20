@@ -66,7 +66,7 @@ parser.add_argument('-learning_rate', type=float, default=1.0,
 parser.add_argument('-max_grad_norm', type=float, default=5,
                     help="""If the norm of the gradient vector exceeds this,
                     renormalize it to have the norm equal to max_grad_norm""")
-parser.add_argument('-dropout', type=float, default=0.3,
+parser.add_argument('-dropout', type=float, default=0.0,
                     help='Dropout probability; applied between LSTM stacks.')
 parser.add_argument('-learning_rate_decay', type=float, default=0.5,
                     help="""Decay learning rate by this much if (i) perplexity
@@ -97,7 +97,7 @@ parser.add_argument('-max_len_latent', type=int, default=64,
 parser.add_argument('-latent_vec_size', type=int, default=100,
                     help="""Dimension of Gaussian Variates of the latent
                     sequence.""")
-parser.add_argument('-gamma', type=float, default=0.99,
+parser.add_argument('-gamma', type=float, default=0.95,
                     help="""Decay Parameter For Geometric Prior Distribution
                     Over the Length of the Latent Sequence.""")
 parser.add_argument('-lam', type=float, default=1.0,
@@ -175,7 +175,6 @@ def trainModel(model, trainData, validData, dataset, optim):
         report_src_words = 0
         start = time.time()
         N = len(trainData)
-        eval_every = 0
         for i in range(N):
             j = float(i)
             if opt.kl_w:
@@ -204,12 +203,6 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
-                eval_every += 1
-                if eval_every % 10 == 0 and eval_every > 0:
-                    valid_loss = eval(model, criterion, validData, epoch)
-                    valid_ppl = math.exp(min(valid_loss, 100))
-                    print('Validation perplexity: %g' % valid_ppl)
-
                 print("Epoch %2d, %5d/%5d batches; acc %0.5f, perplexity: %6.2f; %3.0f Source tokens/s; %6.0f s elapsed" %
                       (epoch, i, len(trainData), (num_correct/report_words),
                       math.exp(min(100, report_loss / report_words)),

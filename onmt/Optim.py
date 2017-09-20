@@ -32,7 +32,8 @@ class Optim(object):
         grad_norm = 0
         for param in self.params:
             if param.grad is None:
-                print 'NoneParam: ', param
+                print 'NoneParam: '
+                param.grad.data
             else:
                 grad_norm += math.pow(param.grad.data.norm(), 2)
 

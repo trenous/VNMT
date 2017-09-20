@@ -35,7 +35,7 @@ class GlobalAttention(nn.Module):
         self.mask = None
 
     def applyMask(self, mask):
-        self.mask = mask
+        self.mask = mask.data
 
     def forward(self, input, context):
         """
@@ -89,7 +89,7 @@ class GlobalAttentionLatent(nn.Module):
         self.mask = None
 
     def applyMask(self, mask):
-        self.mask = mask.unsqueeze(2)
+        self.mask = mask.unsqueeze(2).data
 
     def forward(self, input, context):
         """
@@ -126,7 +126,7 @@ class ConvexCombination(nn.Module):
         self.mask = None
 
     def applyMask(self, mask):
-        self.mask = mask.unsqueeze(2)
+        self.mask = mask.unsqueeze(2).data
 
     def forward(self, context):
         """
@@ -143,7 +143,7 @@ class ConvexCombination(nn.Module):
         score = scores - scores.max(1)[0].expand_as(scores)
 	attn = torch.exp(scores)
         if self.mask is not None:
-            attn.data.masked_fill_(self.mask.data, float(0.))
+            attn.data.masked_fill_(self.mask, float(0.))
         attn = attn / attn.sum(1).expand_as(attn)
         attn = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
         weightedContext = torch.bmm(attn, context)  # batch x dim

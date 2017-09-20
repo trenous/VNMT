@@ -16,11 +16,11 @@ def make_mask(k):
     '''
     batch_size = k.size(0)
     k_max = torch.max(k.data)
-    mask = torch.Tensor(torch.arange(0, k_max))
+    mask = Variable(torch.arange(0, k_max), requires_grad=False)
     if k.is_cuda:
         mask = mask.cuda()
     mask = mask.unsqueeze(0).expand(batch_size, mask.size(0))
-    return mask.ge(k.data.expand_as(mask))
+    return mask.ge(k.expand_as(mask))
 
 def mask_tensor(k, vec, fill):
     ''' Masks Entries in vec that are longer than specified by k.
@@ -30,7 +30,7 @@ def mask_tensor(k, vec, fill):
     mask = make_mask(k)
     for i in range(2, vec.dim()):
         mask = mask.unsqueeze(i)
-    vec.data.masked_fill_(mask.expand_as(vec), fill)
+    vec.masked_fill_(mask.expand_as(vec), fill)
     return vec
 
 
@@ -288,7 +288,7 @@ class DecoderLatent(nn.Module):
         k_max = int(torch.max(k.data))  #Longest Word in Batch to Sample
         batch_size = h_0.size(1)
         h_size = (batch_size, self.hidden_size)
-        self.attn.applyMask(mask_in.data)
+        self.attn.applyMask(mask_in)
         attn = self.attn(c_0[-1], context.transpose(0,1))
         z = []
         mu = []
@@ -319,7 +319,7 @@ class DecoderLatent(nn.Module):
         # mask samples to length k
         z = mask_tensor(k, z, 0)
         mu = mask_tensor(k, mu, 0)
-        sigma = mask_tensor(k, sigma, 1)
+        sigma = mask_tensor(k, sigma, 0)
         return z, mu, sigma, hidden
 
 class NMTModel(nn.Module):
@@ -465,10 +465,33 @@ class Loss(nn.Module):
         pty = torch.sum(gathered.squeeze(), 1)
         return pty, float(num_correct)
 
+
+    def p_theta_z(self, z, k):
+        '''Returns Log Density of z given length k under the Prior.'''
+        log_pz = -0.5*z*z - math.log(math.sqrt(2*math.pi))
+        log_pz = self.mask(k, log_pz)
+        # Sum along Seq-Length AND Latent Dim
+        log_pz = log_pz.view(log_pz.size(0), log_pz.size(1) * log_pz.size(2))
+        return torch.sum(log_pz, 1)
+
+
+    def q_phi(self, mu, sigma, k, z):
+        '''Returns Log Density of z given length k under the
+           approximate posterior q_phi(z | x, k).
+        '''
+	log_qf = -0.5 * torch.pow((z-mu), 2)
+        log_qf = log_qf / torch.pow(torch.exp(sigma), 2)
+        log_qf -= sigma + math.log(math.sqrt(2*math.pi))
+        log_qf = self.mask(k, log_qf)
+        # Sum along Seq-Length AND Latent Dim
+        log_qf = log_qf.view(log_qf.size(0),
+                               log_qf.size(1)*log_qf.size(2))
+        return torch.sum(log_qf, 1)
+
     def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         batch_size = pi.size(0)
         kld_len = self.kld_length(pi)
-        loss = kl_weight * kld_len
+        loss = kl_weight * kld_len.div(batch_size)
         loss_report = kl_weight * kld_len
         pty = 0.0
         kld = 0.0
@@ -483,7 +506,7 @@ class Loss(nn.Module):
             kld_ = mask_tensor(k_i, kld_, 0)
             kld_ = kld_.view(kld_.size(0), kld_.size(1) * kld_.size(2))
             kld_  =  torch.sum(kld_, 1)
-            kld += kld_.mean().div(self.sample).data[0]
+            kld += kld_.mean().div(self.sample)
             pty_, corr_ = self.p_theta_y(outputs[i], targets)
             pty += pty_.mean().div(self.sample)
             num_correct += corr_  / self.sample
@@ -494,12 +517,14 @@ class Loss(nn.Module):
             kls.append(kld_)
 
         elbo = -loss.clone().detach().data[0]
+
         ### Return if in Eval Mode
         if not self.training:
             return elbo, loss_report.data[0]
 
         ### Reinforcements
         bl = baseline.clone().detach()
+        rein_loss = 0.0
         for i in range(self.sample):
             indices = k[i] - 1
             # Copy Prevents Backprop Through Rewards
@@ -507,8 +532,8 @@ class Loss(nn.Module):
             RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
             reward_adjusted = r - self.r_mean - bl
             reinforcement = self.lam * reward_adjusted * RE_grad
-            loss -= reinforcement.mean().div(self.sample)
-
+            rein_loss -= reinforcement.mean().div(self.sample)
+        loss += rein_loss
         ### Baseline Loss
         r_avg = torch.stack(rs).mean(0).clone().detach()
 
@@ -528,13 +553,14 @@ class Loss(nn.Module):
         if self.gpu:
             range_ = range_.cuda()
         E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
-        mean_sig = [sig.mean(1) for sig in sigma]
-        mean_sig = torch.exp(torch.stack(mean_sig)).mean()
+        mean_sig = mask_tensor(k[0], torch.exp(sigma[0]), 0)
+        mean_sig = mean_sig / k[0].unsqueeze(1).expand_as(mean_sig)
+        mean_sig = mean_sig.sum(1).mean()
         log_value('BaseLine', baseline.mean().data[0], step)
         log_value('Expected Length', E_pi.data[0], step)
         log_value('Loss', loss.data[0], step)
-        log_value('KLD', kld , step)
-        log_value('KLD_LEN', kld_len.div(batch_size).data[0], step)
+        log_value('KLD', kld.data[0] , step)
+        log_value('KLD_LEN', kld_len.data[0], step)
         log_value('p_y_given_z', pty.data[0], step)
         log_value('r_mean_step', r_avg.mean().data[0], step)
         log_value('r_moving_avg', self.r_mean, step)
