@@ -122,6 +122,7 @@ parser.add_argument('-log_interval', type=int, default=50,
 
 opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
+# Slowly Increase kl weights
 if not opt.kl_weights:
     opt.kl_weights = [1e-8, 1e-8, 1e-8, 1e-8, 1e-7, 1e-7, 1e-7, 1e-6, 1e-6, 1e-5,  1e-4,1e-4,1e-3, 1e-3, 1e-3, 1e-2, 1e-1, 0.2, 0.5, 0.7, 0.8, 1.0]
 
@@ -140,7 +141,7 @@ def eval(model, criterion, data, epoch, kl_weight):
     elbo = 0.0
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, pi, k, z, _ = model(batch)  # FIXME volatile
+        outputs, mu, sigma, pi, k, z, _ = model(batch)
         targets = batch[1][:, 1:]  # exclude <s> from targets
         elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight=kl_weight)
         elbo += elbo_
