@@ -93,7 +93,7 @@ class EncoderLatent(nn.Module):
             c_0 = Variable(input.data.new(*h_size).zero_(), requires_grad=False)
             hidden = (h_0, c_0)
 
-        # FIXME: packed sequence
+        # FIXED: packed sequence for Samples with different length
         # Reorder inputs by Length
         k_sorted, indices = torch.sort(k.squeeze(), descending=True)
         lengths = k_sorted.data.tolist()
@@ -188,7 +188,7 @@ class Decoder(nn.Module):
         return outputs.transpose(0, 1), hidden, attn
 
 class FeedForward(nn.Module):
-    ''' FeedForward Module with one hidden layer
+    ''' Simple FeedForward Module with one hidden layer
     '''
     def __init__(self, in_dim, out_dim):
         super(FeedForward, self).__init__()
@@ -284,6 +284,7 @@ class DecoderLatent(nn.Module):
         context: batch x sourceL x rnn_size
         z_0: batch x latent_vec_size
         k: batch x 1
+        mask_in: batch x sourceL ByteTensor
         '''
         h_0, c_0 = hidden
         k_max = int(torch.max(k.data))  #Longest Word in Batch to Sample
@@ -312,7 +313,6 @@ class DecoderLatent(nn.Module):
             z += [z_i]
             mu += [mu_i]
             sigma += [sigma_i]
-            ## ATTN based on output or z_i?
             attn = self.attn(output, context.transpose(0, 1))
         z = torch.stack(z).transpose(0,1)
         mu = torch.stack(mu).transpose(0,1)
@@ -364,6 +364,18 @@ class NMTModel(nn.Module):
             return h
 
     def forward(self, input):
+        ''' Runs a Forward pass Through the model.
+            Input: Minibatch of Sentences
+            Returns:
+              out:   List of decoder output states for each sample
+              mu:    List of means of latent sequence for each sample drawn
+              sigma: List of log-variances of latent sequence for each sample drawn
+              z:     List of samples from standardnormal distribution
+              pi:    Approximate Posterior Length Distribution
+              k:     List of samples from pi
+              context:
+              Detached Context Vectors of Encoder for computation of Baseline
+        '''
         src = input[0]
         mask_in = src.eq(onmt.Constants.PAD)
         tgt = input[1][:, :-1]  # exclude last target from inputs
@@ -449,14 +461,13 @@ class Loss(nn.Module):
 
     def kld_length(self, pi):
         ''' Returns the KL Divergence of the approximate posterior
-           length distribution given by pi and the prior.
+           length distribution given and the prior.
         '''
         return (pi * torch.log(pi / self.prior_len.expand_as(pi))).mean(0).sum()
 
     def p_theta_y(self, output, targets):
-        '''Computes Log Likelihood of Targets Given X.
+        '''Computes Log Likelihood of Targets Given Z.
         '''
-        ipdb.set_trace()
         scores = self.generator(output.contiguous().view(-1, output.size(2)))
         scores = scores.view(output.size(0), output.size(1), -1)
         pred = scores.max(2)[1]
@@ -466,30 +477,6 @@ class Loss(nn.Module):
         pty = torch.sum(logli, 1)
 
         return pty, float(correct.sum().data[0])
-
-
-
-    def p_theta_z(self, z, k):
-        '''Returns Log Density of z given length k under the Prior.'''
-        log_pz = -0.5*z*z - math.log(math.sqrt(2*math.pi))
-        log_pz = self.mask(k, log_pz)
-        # Sum along Seq-Length AND Latent Dim
-        log_pz = log_pz.view(log_pz.size(0), log_pz.size(1) * log_pz.size(2))
-        return torch.sum(log_pz, 1)
-
-
-    def q_phi(self, mu, sigma, k, z):
-        '''Returns Log Density of z given length k under the
-           approximate posterior q_phi(z | x, k).
-        '''
-	log_qf = -0.5 * torch.pow((z-mu), 2)
-        log_qf = log_qf / torch.pow(torch.exp(sigma), 2)
-        log_qf -= sigma + math.log(math.sqrt(2*math.pi))
-        log_qf = self.mask(k, log_qf)
-        # Sum along Seq-Length AND Latent Dim
-        log_qf = log_qf.view(log_qf.size(0),
-                               log_qf.size(1)*log_qf.size(2))
-        return torch.sum(log_qf, 1)
 
     def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
         batch_size = pi.size(0)
@@ -535,7 +522,7 @@ class Loss(nn.Module):
             RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
             reward_adjusted = r - self.r_mean - bl
             reinforcement = self.lam * reward_adjusted * RE_grad
-            rein_loss -= reinforcement.mean().div(self.sample)
+            loss -= reinforcement.mean().div(self.sample)
         loss += rein_loss
         ### Baseline Loss
         r_avg = torch.stack(rs).mean(0).clone().detach()
