@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import math
-
+import ipdb
 
 class GlobalAttention(nn.Module):
     def __init__(self, dim):
@@ -46,30 +46,11 @@ class GlobalAttention(nn.Module):
 
         # Get attention
         attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
-        attn = attn - attn.max(1)[0].expand_as(attn)
+        attn = attn - attn.max(1)[0].unsqueeze(1)
         attn = torch.exp(attn)
         if self.mask is not None:
             attn.data.masked_fill_(self.mask, float(0))
-        attn = attn / attn.sum(1).expand_as(attn)
-        attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
-
-        weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
-        contextC
-
-    def forward(self, input, context):
-        """
-        input: batch x dim
-        context: batch x sourceL x dim
-        """
-        targetT = self.linear_in(input).unsqueeze(2)  # batch x dim x 1
-
-        # Get attention
-        attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
-        attn = attn - attn.max(1)[0].expand_as(attn)
-        attn = torch.exp(attn)
-        if self.mask is not None:
-            attn.data.masked_fill_(self.mask, float(0))
-        attn = attn / attn.sum(1).expand_as(attn)
+        attn = attn / attn.sum(1, keepdim=True)
         attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
 
         weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
@@ -89,7 +70,7 @@ class GlobalAttentionLatent(nn.Module):
         self.mask = None
 
     def applyMask(self, mask):
-        self.mask = mask.unsqueeze(2).data
+        self.mask = mask.data
 
     def forward(self, input, context):
         """
@@ -101,12 +82,11 @@ class GlobalAttentionLatent(nn.Module):
 
         # Get Attention
         attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
-        attn = attn - attn.max(1)[0].expand_as(attn)
+        attn = attn - attn.max(1)[0].unsqueeze(1)
 	attn = torch.exp(attn)
-
         if self.mask is not None:
             attn.data.masked_fill_(self.mask, float(0))
-        attn = attn / attn.sum(1).expand_as(attn)
+        attn = attn / attn.sum(1, keepdim=True)
         attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
 
         weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
@@ -126,7 +106,7 @@ class ConvexCombination(nn.Module):
         self.mask = None
 
     def applyMask(self, mask):
-        self.mask = mask.unsqueeze(2).data
+        self.mask = mask.data
 
     def forward(self, context):
         """
@@ -140,11 +120,11 @@ class ConvexCombination(nn.Module):
         scores = self.linear_in(contextv).view(batch, length, 1).squeeze(2)
         # scores.size =  batch x sourceL
         # Compute Convex Combination
-        score = scores - scores.max(1)[0].expand_as(scores)
+        score = scores - scores.max(1)[0].unsqueeze(1)
 	attn = torch.exp(scores)
         if self.mask is not None:
             attn.data.masked_fill_(self.mask, float(0.))
-        attn = attn / attn.sum(1).expand_as(attn)
+        attn = attn / attn.sum(1, keepdim=True)
         attn = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
         weightedContext = torch.bmm(attn, context)  # batch x dim
         return weightedContext.squeeze(1)

@@ -124,7 +124,8 @@ opt = parser.parse_args()
 opt.cuda = len(opt.gpus)
 if not opt.kl_weights:
     opt.kl_weights = [1e-8, 1e-8, 1e-8, 1e-8, 1e-7, 1e-7, 1e-7, 1e-6, 1e-6, 1e-5,  1e-4,1e-4,1e-3, 1e-3, 1e-3, 1e-2, 1e-1, 0.2, 0.5, 0.7, 0.8, 1.0]
-    print(opt)
+
+print(opt)
 configure("runs/" + opt.logdir, flush_secs=5)
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with -cuda")

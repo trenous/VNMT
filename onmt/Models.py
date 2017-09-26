@@ -227,6 +227,7 @@ class LengthNet(nn.Module):
          out:
              pi:     batch x max_len_latent
          '''
+
          self.attention.applyMask(mask_in)
          attn = self.attention(context)
          scores = self.linear(attn)
@@ -312,7 +313,7 @@ class DecoderLatent(nn.Module):
             mu += [mu_i]
             sigma += [sigma_i]
             ## ATTN based on output or z_i?
-            attn = self.attn(output, context.t())
+            attn = self.attn(output, context.transpose(0, 1))
         z = torch.stack(z).transpose(0,1)
         mu = torch.stack(mu).transpose(0,1)
         sigma = torch.stack(sigma).transpose(0,1)
@@ -371,7 +372,7 @@ class NMTModel(nn.Module):
         enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
                       self._fix_enc_hidden(enc_hidden[1]))
         ### Length
-        pi = self.lengthnet(enc_context.t(), mask_in)
+        pi = self.lengthnet(enc_context.transpose(0, 1), mask_in)
         k = []
         mu = []
         sigma = []
@@ -455,15 +456,17 @@ class Loss(nn.Module):
     def p_theta_y(self, output, targets):
         '''Computes Log Likelihood of Targets Given X.
         '''
-        output = output.contiguous().view(-1, output.size(2))
-        scores = self.generator(output)
-        pred = scores.max(1)[1]
-        num_correct = pred.data.eq(targets.data).masked_select(targets.ne(onmt.Constants.PAD).data).sum()
-        pred = scores.view(targets.size(0), targets.size(1), scores.size(1))
-        gathered = torch.gather(pred, 2,  targets.unsqueeze(2)).squeeze()
-        gathered = gathered.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
-        pty = torch.sum(gathered.squeeze(), 1)
-        return pty, float(num_correct)
+        ipdb.set_trace()
+        scores = self.generator(output.contiguous().view(-1, output.size(2)))
+        scores = scores.view(output.size(0), output.size(1), -1)
+        pred = scores.max(2)[1]
+        correct = pred.eq(targets).masked_select(targets.ne(onmt.Constants.PAD))
+        logli = torch.gather(scores, 2,  targets.unsqueeze(2)).squeeze()
+        logli = logli.masked_fill_(targets.eq(onmt.Constants.PAD), 0)
+        pty = torch.sum(logli, 1)
+
+        return pty, float(correct.sum().data[0])
+
 
 
     def p_theta_z(self, z, k):
