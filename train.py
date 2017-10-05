@@ -31,6 +31,9 @@ parser.add_argument('-layers', type=int, default=2,
                     help='Number of layers in the LSTM encoder/decoder')
 parser.add_argument('-rnn_size', type=int, default=100,
                     help='Size of LSTM hidden states')
+parser.add_argument('-size', type=int, default=20,
+                    help='Length of hidden Sequence representation')
+
 parser.add_argument('-word_vec_size', type=int, default=100,
                     help='Word embedding sizes')
 parser.add_argument('-input_feed', type=int, default=1,
@@ -141,9 +144,9 @@ def eval(model, criterion, data, epoch, kl_weight):
     elbo = 0.0
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
-        outputs, mu, sigma, pi, k, z, _ = model(batch)
+        outputs, mu, sigma,  k, z, _ = model(batch)
         targets = batch[1][:, 1:]  # exclude <s> from targets
-        elbo_, loss_report = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight=kl_weight)
+        elbo_, loss_report = criterion.forward(outputs, mu, sigma, k, z, targets, kl_weight=kl_weight)
         elbo += elbo_
         total_loss += loss_report
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
@@ -155,19 +158,16 @@ def eval(model, criterion, data, epoch, kl_weight):
 def trainModel(model, trainData, validData, dataset, optim):
     print(model)
     model.train()
-    baseline = onmt.Models.BaseLine(opt)
-    baseline.train()
+    #baseline = onmt.Models.BaseLine(opt)
+    #baseline.train()
     if optim.last_ppl is None:
         for p in model.parameters():
-            p.data.uniform_(-opt.param_init, opt.param_init)
-        for p in baseline.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
     # define criterion of each GPU
     criterion = onmt.Models.Loss(opt, model.generator,
                             dataset['dicts']['tgt'].size())
     if opt.cuda:
         criterion = criterion.cuda()
-        baseline = baseline.cuda()
     start_time = time.time()
     def trainEpoch(epoch):
         #shuffle mini batch order
@@ -187,14 +187,11 @@ def trainModel(model, trainData, validData, dataset, optim):
             batch = trainData[batchIdx]
             step = (i + (epoch-1) * len(trainData)) * opt.batch_size
             batch = [x.transpose(0, 1) for x in batch] # must be batch first for gather/scatter in DataParallel
-            outputs, mu, sigma, pi, k, z, context = model(batch)
-            base_line = baseline(context)
+            outputs, mu, sigma, k, z, context = model(batch)
             model.zero_grad()
-            baseline.zero_grad()
             targets = batch[1][:, 1:]  # exclude <s> from targets
-            loss, loss_bl, loss_report, correct = criterion.forward(outputs, mu, sigma, pi, k, z, targets, kl_weight = kl_weight, baseline=base_line, step=step)
+            loss, loss_report, correct = criterion.forward(outputs, mu, sigma, k, z, targets, kl_weight = kl_weight, step=step)
             loss.backward()
-            loss_bl.backward()
             # update the parameters
             num_correct += correct
             grad_norm = optim.step()
@@ -214,7 +211,6 @@ def trainModel(model, trainData, validData, dataset, optim):
                 report_loss = report_words = report_src_words = num_correct = 0
                 start = time.time()
             ### Logging
-            log_value('baseline', base_line.mean().data[0], step)
         return total_loss / total_words
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
@@ -273,14 +269,13 @@ def main():
         decoder = onmt.Models.Decoder(opt, dicts['tgt'])
         decoderlatent = onmt.Models.DecoderLatent(opt)
         encoderlatent = onmt.Models.EncoderLatent(opt)
-        lengthnet = onmt.Models.LengthNet(opt)
+        #lengthnet = onmt.Models.LengthNet(opt)
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
             nn.LogSoftmax())
         if opt.cuda > 1:
             generator = nn.DataParallel(generator, device_ids=opt.gpus)
         model = onmt.Models.NMTModel(encoder,
-                                     lengthnet,
                                      decoderlatent,
                                      encoderlatent,
                                      decoder,

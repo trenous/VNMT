@@ -208,31 +208,31 @@ class FeedForward(nn.Module):
         out = self.activation(out)
         return out
 
-class LengthNet(nn.Module):
-     ''' Computes parameters for the distribution
-      of the latent length.
-     In: Context Matrix batch x sourceL x dim
-     Out: softmax(U * [softmax(wC + b1)C] + b2)
-     '''
-     def __init__(self, opt):
-         super(LengthNet, self).__init__()
-         self.attention = onmt.modules.ConvexCombination(opt)
-         self.linear = FeedForward(opt.rnn_size, opt.max_len_latent)
-         self.sm = nn.Softmax()
+# class LengthNet(nn.Module):
+#      ''' Computes parameters for the distribution
+#       of the latent length.
+#      In: Context Matrix batch x sourceL x dim
+#      Out: softmax(U * [softmax(wC + b1)C] + b2)
+#      '''
+#      def __init__(self, opt):
+#          super(LengthNet, self).__init__()
+#          self.attention = onmt.modules.ConvexCombination(opt)
+#          self.linear = FeedForward(opt.rnn_size, opt.max_len_latent)
+#          self.sm = nn.Softmax()
 
-     def forward(self, context, mask_in):
-         '''
-         in:
-            context: batch x sourceL x dim
-         out:
-             pi:     batch x max_len_latent
-         '''
+     # def forward(self, context, mask_in):
+     #     '''
+     #     in:
+     #        context: batch x sourceL x dim
+     #     out:
+     #         pi:     batch x max_len_latent
+     #     '''
 
-         self.attention.applyMask(mask_in)
-         attn = self.attention(context)
-         scores = self.linear(attn)
-         pi = self.sm(scores)
-         return pi
+     #     self.attention.applyMask(mask_in)
+     #     attn = self.attention(context)
+     #     scores = self.linear(attn)
+     #     pi = self.sm(scores)
+     #     return pi
 
 
 
@@ -327,7 +327,6 @@ class NMTModel(nn.Module):
 
     def __init__(self,
                  encoder,
-                 lengthnet,
                  decoderlatent,
                  encoderlatent,
                  decoder,
@@ -336,8 +335,8 @@ class NMTModel(nn.Module):
 
         super(NMTModel, self).__init__()
         self.sample = opt.sample
+        self.size = opt.size
         self.sample_reinforce = opt.sample_reinforce
-        self.lengthnet = lengthnet
         self.encoder = encoder
         self.decoder = decoder
         self.decoder_l = decoderlatent
@@ -383,8 +382,6 @@ class NMTModel(nn.Module):
         enc_hidden, enc_context = self.encoder(src)
         enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
                       self._fix_enc_hidden(enc_hidden[1]))
-        ### Length
-        pi = self.lengthnet(enc_context.transpose(0, 1), mask_in)
         k = []
         mu = []
         sigma = []
@@ -393,8 +390,8 @@ class NMTModel(nn.Module):
         ## Sample i times from length dist
         for i in range(self.sample):
             # Sample in [1, max_len]
-            k_i = pi.multinomial().float() + 1.0
-            k_i = Variable(k_i.data, requires_grad=False)
+            #k_i = pi.multinomial().float() + 1.0
+            k_i = Variable(self.size * torch.ones(enc_context.size()[1], 1), requires_grad=False)
             k += [k_i]
             z_0 = self.make_init_decoder_output(enc_context, self.decoder_l)
             z_i, mu_i, sigma_i, dec_hidden_l = self.decoder_l(enc_hidden,
@@ -415,7 +412,7 @@ class NMTModel(nn.Module):
             z += [z_i]
             out += [out_i]
 
-        return out, mu, sigma, pi, k, z, enc_context.clone().detach()
+        return out, mu, sigma, k, z, enc_context.clone().detach()
 
 class BaseLine(nn.Module):
     '''Input-dependent baseline for REINFORCE.
@@ -459,11 +456,11 @@ class Loss(nn.Module):
             self.crit = self.crit.cuda()
         self.r_mean = 0.0
 
-    def kld_length(self, pi):
-        ''' Returns the KL Divergence of the approximate posterior
-           length distribution given and the prior.
-        '''
-        return (pi * torch.log(pi / self.prior_len.expand_as(pi))).mean(0).sum()
+    # def kld_length(self, pi):
+    #     ''' Returns the KL Divergence of the approximate posterior
+    #        length distribution given and the prior.
+    #     '''
+    #     return (pi * torch.log(pi / self.prior_len.expand_as(pi))).mean(0).sum()
 
     def p_theta_y(self, output, targets):
         '''Computes Log Likelihood of Targets Given Z.
@@ -478,11 +475,10 @@ class Loss(nn.Module):
 
         return pty, float(correct.sum().data[0])
 
-    def forward(self, outputs, mu, sigma, pi, k , z, targets, kl_weight=1, baseline=None, step=None):
-        batch_size = pi.size(0)
-        kld_len = self.kld_length(pi)
-        loss = kl_weight * kld_len.div(batch_size)
-        loss_report = kl_weight * kld_len
+    def forward(self, outputs, mu, sigma, k, z, targets, kl_weight=1, step=None):
+        batch_size = targets.size()[0]
+        loss = 0
+        loss_report = 0
         pty = 0.0
         kld = 0.0
         num_correct = 0.0
@@ -513,21 +509,21 @@ class Loss(nn.Module):
             return elbo, loss_report.data[0]
 
         ### Reinforcements
-        bl = baseline.clone().detach()
-        rein_loss = 0.0
-        for i in range(self.sample):
-            indices = k[i] - 1
-            # Copy Prevents Backprop Through Rewards
-            r = rs[i].clone().detach()
-            RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
-            reward_adjusted = r - self.r_mean - bl
-            reinforcement = self.lam * reward_adjusted * RE_grad
-            loss -= reinforcement.mean().div(self.sample)
-        loss += rein_loss
+        # bl = baseline.clone().detach()
+        # rein_loss = 0.0
+        # for i in range(self.sample):
+        #     indices = k[i] - 1
+        #     # Copy Prevents Backprop Through Rewards
+        #     r = rs[i].clone().detach()
+        #     RE_grad = torch.log(torch.gather(pi, 1, indices.long()))
+        #     reward_adjusted = r - self.r_mean - bl
+        #     reinforcement = self.lam * reward_adjusted * RE_grad
+        #     loss -= reinforcement.mean().div(self.sample)
+        # loss += rein_loss
         ### Baseline Loss
         r_avg = torch.stack(rs).mean(0).clone().detach()
 
-        loss_bl = torch.pow(r_avg - baseline - self.r_mean, 2).mean()
+        #loss_bl = torch.pow(r_avg - baseline - self.r_mean, 2).mean()
 
         ### Update Running Average of Rewards
         if self.r_mean:
@@ -542,21 +538,21 @@ class Loss(nn.Module):
         range_ = Variable(torch.arange(1, self.max_len + 1)).unsqueeze(0)
         if self.gpu:
             range_ = range_.cuda()
-        E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
+        #E_pi = (pi * range_.expand_as(pi)).sum(1).mean()
         mean_sig = mask_tensor(k[0], torch.exp(sigma[0]), 0)
         mean_sig = mean_sig / k[0].unsqueeze(1).expand_as(mean_sig)
         mean_sig = mean_sig.sum(1).mean()
-        log_value('BaseLine', baseline.mean().data[0], step)
-        log_value('Expected Length', E_pi.data[0], step)
+        #log_value('BaseLine', baseline.mean().data[0], step)
+        #log_value('Expected Length', E_pi.data[0], step)
         log_value('Loss', loss.data[0], step)
         log_value('KLD', kld.data[0] , step)
-        log_value('KLD_LEN', kld_len.data[0], step)
+        #log_value('KLD_LEN', kld_len.data[0], step)
         log_value('p_y_given_z', pty.data[0], step)
-        log_value('r_mean_step', r_avg.mean().data[0], step)
-        log_value('r_moving_avg', self.r_mean, step)
-        log_value('loss BL', loss_bl.data[0], step)
+        #log_value('r_mean_step', r_avg.mean().data[0], step)
+        #log_value('r_moving_avg', self.r_mean, step)
+        #log_value('loss BL', loss_bl.data[0], step)
         log_value('ELBO', elbo, step)
         log_value('kl_weight', kl_weight, step)
         log_value('mean_sigma', mean_sig.data[0], step)
 
-        return loss, loss_bl, loss_report.data[0], num_correct
+        return loss, loss_report.data[0], num_correct
